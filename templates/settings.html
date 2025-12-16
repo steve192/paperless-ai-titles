@@ -1,0 +1,439 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="settings">
+    <h2>Configuration</h2>
+    <p>Changes apply immediately and override values from <code>.env</code>.</p>
+    <form id="settings-form" class="settings-grid">
+        <fieldset>
+            <legend>Paperless</legend>
+            <label>
+                Base URL
+                <input type="url" name="paperless_base_url" required />
+            </label>
+            <label>
+                API token
+                <input type="password" name="paperless_api_token" required />
+            </label>
+            <label class="picker-group">
+                Skip tag
+                <span class="hint">Documents with this tag are ignored.</span>
+                <div class="picker-control" data-picker-container>
+                    <input type="text" name="paperless_skip_tag" autocomplete="off" data-picker="tag" data-picker-field="paperless_skip_tag" placeholder="skip-ai-title" />
+                    <div class="picker-dropdown" data-picker-dropdown></div>
+                    <button type="button" class="create-option" data-picker-create="tag" data-input="paperless_skip_tag" hidden>Create Paperless tag</button>
+                </div>
+            </label>
+            <label class="picker-group">
+                Required tag
+                <span class="hint">Only documents with this tag enter the queue.</span>
+                <div class="picker-control" data-picker-container>
+                    <input type="text" name="paperless_require_tag" autocomplete="off" data-picker="tag" data-picker-field="paperless_require_tag" />
+                    <div class="picker-dropdown" data-picker-dropdown></div>
+                    <button type="button" class="create-option" data-picker-create="tag" data-input="paperless_require_tag" hidden>Create Paperless tag</button>
+                </div>
+            </label>
+            <label class="picker-group">
+                Original title custom field
+                <div class="picker-control" data-picker-container>
+                    <input type="text" name="paperless_original_title_field" autocomplete="off" data-picker="custom-field" data-picker-field="paperless_original_title_field" placeholder="original_title" />
+                    <div class="picker-dropdown" data-picker-dropdown></div>
+                    <button type="button" class="create-option" data-picker-create="custom-field" data-input="paperless_original_title_field" hidden>Create Paperless custom field</button>
+                </div>
+            </label>
+            <label>
+                Hook token
+                <input type="text" name="paperless_hook_token" placeholder="shared secret" />
+            </label>
+        </fieldset>
+        <fieldset>
+            <legend>LLM</legend>
+            <label>
+                Endpoint
+                <input type="url" name="llm_base_url" required />
+            </label>
+            <label>
+                API token
+                <input type="password" name="llm_api_token" />
+            </label>
+            <label>
+                Model name
+                <input type="text" name="llm_model_name" placeholder="local-title-model" />
+            </label>
+            <label>
+                Confidence threshold
+                <input type="number" step="0.05" min="0" max="1" name="llm_confidence_threshold" />
+            </label>
+            <label>
+                Request timeout (s)
+                <input type="number" name="llm_request_timeout" min="5" />
+            </label>
+        </fieldset>
+        <fieldset>
+            <legend>Workflow</legend>
+            <label class="toggle">
+                <input type="radio" name="auto_apply_titles" value="true" />
+                <span>Apply titles automatically</span>
+            </label>
+            <label class="toggle">
+                <input type="radio" name="auto_apply_titles" value="false" />
+                <span>Queue suggestions for manual approval</span>
+            </label>
+        </fieldset>
+        <fieldset>
+            <legend>Scanner</legend>
+            <label class="toggle">
+                <input type="checkbox" name="scanner_enabled" />
+                <span>Enable scheduled scan</span>
+            </label>
+            <label>
+                Scan interval (seconds)
+                <input type="number" name="scan_interval_seconds" min="30" />
+            </label>
+            <label>
+                Page size
+                <input type="number" name="scanner_page_size" min="10" />
+            </label>
+            <label>
+                Max jobs per scan
+                <input type="number" name="max_jobs_per_scan" min="1" />
+            </label>
+        </fieldset>
+        <button type="submit" class="wide">Save all changes</button>
+    </form>
+    <p id="settings-status" class="hint"></p>
+</section>
+<script>
+const form = document.getElementById('settings-form');
+const statusEl = document.getElementById('settings-status');
+const pickerInputs = document.querySelectorAll('[data-picker]');
+const metadataStore = {
+    key: null,
+    promise: null,
+    tags: [],
+    customFields: [],
+};
+
+function setStatus(message) {
+    if (!statusEl) return;
+    statusEl.textContent = message || '';
+}
+
+function applyValue(input, value) {
+    if (input.type === 'checkbox') {
+        input.checked = value === true || value === 'true';
+    } else if (input.type === 'radio') {
+        if (value === undefined || value === null) return;
+        input.checked = String(value) === input.value;
+    } else {
+        input.value = value ?? '';
+    }
+}
+
+async function loadSettings() {
+    const settings = await (await fetch('/api/settings')).json();
+    const map = Object.fromEntries(settings.map((item) => [item.key, item.value]));
+    Array.from(form.elements).forEach((input) => {
+        if (input.name && Object.prototype.hasOwnProperty.call(map, input.name)) {
+            applyValue(input, map[input.name]);
+        }
+    });
+    ensureMetadataLoaded().catch(() => {});
+}
+
+form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const values = gatherSettings();
+    const requests = Object.entries(values).map(([key, value]) => fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, value })
+    }));
+    await Promise.all(requests);
+    setStatus('Settings saved.');
+});
+
+function gatherSettings() {
+    const data = {};
+    const formData = new FormData(form);
+    formData.forEach((value, key) => {
+        data[key] = value;
+    });
+    form.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+        data[input.name] = input.checked;
+    });
+    form.querySelectorAll('input[type="radio"]').forEach((input) => {
+        if (input.checked) {
+            data[input.name] = input.value;
+        }
+    });
+    return data;
+}
+
+function metadataKey(settings) {
+    return `${settings.paperless_base_url || ''}::${settings.paperless_api_token || ''}`;
+}
+
+function requirePaperlessCredentials(settings) {
+    if (!settings.paperless_base_url || !settings.paperless_api_token) {
+        throw new Error('Enter your Paperless URL and API token to browse tags.');
+    }
+}
+
+async function ensureMetadataLoaded(force = false) {
+    const settings = gatherSettings();
+    requirePaperlessCredentials(settings);
+    const key = metadataKey(settings);
+    if (!force && metadataStore.key === key && metadataStore.tags.length && metadataStore.customFields.length) {
+        return metadataStore;
+    }
+    if (!force && metadataStore.promise && metadataStore.key === key) {
+        return metadataStore.promise;
+    }
+    metadataStore.key = key;
+    const loader = fetchMetadata(settings)
+        .catch((error) => {
+            metadataStore.key = null;
+            throw error;
+        })
+        .finally(() => {
+            metadataStore.promise = null;
+        });
+    metadataStore.promise = loader;
+    return loader;
+}
+
+async function fetchMetadata(settings) {
+    const payload = { settings };
+    const res = await fetch('/api/setup/metadata', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+        throw new Error('Unable to load Paperless metadata.');
+    }
+    const data = await res.json();
+    metadataStore.tags = data.tags || [];
+    metadataStore.customFields = data.custom_fields || [];
+    refreshPickerOptions('tag');
+    refreshPickerOptions('custom-field');
+    return metadataStore;
+}
+
+function refreshPickerOptions(kind) {
+    pickerInputs.forEach((input) => {
+        if (input.dataset.picker === kind) {
+            updateCreateButton(input);
+            if (document.activeElement === input) {
+                updatePickerDropdown(input);
+            }
+        }
+    });
+}
+
+function getPickerDropdown(input) {
+    const container = input.closest('[data-picker-container]');
+    return container ? container.querySelector('[data-picker-dropdown]') : null;
+}
+
+function showPickerDropdown(input) {
+    closeAllPickerDropdowns();
+    const dropdown = getPickerDropdown(input);
+    if (!dropdown) return;
+    updatePickerDropdown(input);
+    dropdown.classList.add('visible');
+}
+
+function hidePickerDropdown(input) {
+    const dropdown = getPickerDropdown(input);
+    if (!dropdown) return;
+    dropdown.classList.remove('visible');
+}
+
+function closeAllPickerDropdowns() {
+    document.querySelectorAll('.picker-dropdown.visible').forEach((dropdown) => dropdown.classList.remove('visible'));
+}
+
+function updatePickerDropdown(input) {
+    const dropdown = getPickerDropdown(input);
+    if (!dropdown) return;
+    const kind = input.dataset.picker;
+    const query = (input.value || '').toLowerCase().trim();
+    const options = kind === 'tag' ? metadataStore.tags : metadataStore.customFields;
+    if (!options.length) {
+        dropdown.innerHTML = '<div class="picker-option muted">Load Paperless metadata first.</div>';
+        dropdown.classList.add('visible');
+        return;
+    }
+    const matches = options
+        .filter((option) => {
+            const target = (option.name || option.slug || '').toLowerCase();
+            return target.includes(query);
+        })
+        .slice(0, 8);
+    if (!matches.length) {
+        dropdown.innerHTML = '<div class="picker-option muted">No matches. Enter a new name to create it.</div>';
+        dropdown.classList.add('visible');
+        return;
+    }
+    dropdown.innerHTML = matches
+        .map((option) => {
+            const label = option.name || option.slug || '';
+            const value = kind === 'tag' ? (option.name || option.slug || '') : (option.slug || option.name || '');
+            return `<div class="picker-option" data-value="${escapeHtml(value)}">${escapeHtml(label)}</div>`;
+        })
+        .join('');
+    dropdown.classList.add('visible');
+}
+
+function setupPickerControls() {
+    pickerInputs.forEach((input) => {
+        input.addEventListener('focus', () => {
+            showPickerDropdown(input);
+            ensureMetadataLoaded()
+                .then(() => updatePickerDropdown(input))
+                .catch(handleMetadataError);
+        });
+        input.addEventListener('input', () => {
+            updateCreateButton(input);
+            updatePickerDropdown(input);
+        });
+        input.addEventListener('blur', () => {
+            setTimeout(() => hidePickerDropdown(input), 120);
+        });
+    });
+    document.querySelectorAll('[data-picker-create]').forEach((button) => {
+        button.addEventListener('click', () => handleCreateButtonClick(button));
+    });
+    document.querySelectorAll('[data-picker-dropdown]').forEach((dropdown) => {
+        dropdown.addEventListener('mousedown', (event) => event.preventDefault());
+        dropdown.addEventListener('click', (event) => {
+            const option = event.target.closest('.picker-option[data-value]');
+            if (!option) return;
+            const container = dropdown.closest('[data-picker-container]');
+            const input = container?.querySelector('[data-picker]');
+            if (!input) return;
+            input.value = option.dataset.value;
+            updateCreateButton(input);
+            hidePickerDropdown(input);
+        });
+    });
+    document.addEventListener('click', (event) => {
+        if (!event.target.closest('[data-picker-container]')) {
+            closeAllPickerDropdowns();
+        }
+    });
+}
+
+function updateCreateButton(input) {
+    const button = document.querySelector(`[data-picker-create][data-input="${input.name}"]`);
+    if (!button) return;
+    const value = (input.value || '').trim();
+    if (!value || pickerValueExists(input.dataset.picker, value)) {
+        button.hidden = true;
+        return;
+    }
+    button.textContent = input.dataset.picker === 'tag'
+        ? `Create Paperless tag "${value}"`
+        : `Create Paperless custom field "${value}"`;
+    button.hidden = false;
+}
+
+function pickerValueExists(kind, value) {
+    if (!value) return false;
+    if (kind === 'tag') {
+        return metadataStore.tags.some((tag) => tag?.name === value || tag?.slug === value);
+    }
+    return metadataStore.customFields.some((field) => field?.slug === value || field?.name === value);
+}
+
+function handleMetadataError(error) {
+    if (!error) return;
+    console.warn('Metadata load issue', error);
+    if (error.message) {
+        setStatus(error.message);
+    }
+}
+
+async function handleCreateButtonClick(button) {
+    const type = button.dataset.pickerCreate;
+    const inputName = button.dataset.input;
+    const input = document.querySelector(`[name="${inputName}"]`);
+    if (!input) return;
+    const value = (input.value || '').trim();
+    if (!value) return;
+    button.disabled = true;
+    const originalLabel = button.textContent;
+    button.textContent = type === 'tag' ? 'Creating Paperless tag…' : 'Creating Paperless field…';
+    try {
+        const created = type === 'tag'
+            ? await createTagRequest(value)
+            : await createCustomFieldRequest(value);
+        if (type === 'tag') {
+            metadataStore.tags.push(created);
+            refreshPickerOptions('tag');
+            input.value = created.name;
+        } else {
+            metadataStore.customFields.push(created);
+            refreshPickerOptions('custom-field');
+            input.value = created.slug || created.name;
+        }
+        hidePickerDropdown(input);
+        setStatus(`Paperless ${type === 'tag' ? 'tag' : 'custom field'} created successfully.`);
+    } catch (error) {
+        console.error('Creation failed', error);
+        setStatus(error.message || 'Unable to create resource in Paperless.');
+    } finally {
+        button.disabled = false;
+        button.textContent = originalLabel;
+        updateCreateButton(input);
+    }
+}
+
+async function createTagRequest(name) {
+    const settings = gatherSettings();
+    requirePaperlessCredentials(settings);
+    const payload = { settings, name };
+    const res = await fetch('/api/setup/create-tag', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+        throw new Error('Paperless rejected the new tag.');
+    }
+    return res.json();
+}
+
+async function createCustomFieldRequest(name) {
+    const settings = gatherSettings();
+    requirePaperlessCredentials(settings);
+    const payload = { settings, name, data_type: 'string' };
+    const res = await fetch('/api/setup/create-custom-field', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+        throw new Error('Paperless rejected the new custom field.');
+    }
+    return res.json();
+}
+
+function escapeHtml(value) {
+    if (value === null || value === undefined) {
+        return '';
+    }
+    return String(value).replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+    }[char] || char));
+}
+
+setupPickerControls();
+loadSettings();
+</script>
+{% endblock %}

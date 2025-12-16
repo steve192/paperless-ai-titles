@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paperless-ai-titles"
+version = "0.1.0"
+description = "Sidecar service that generates Paperless document titles via LLM"
+authors = [{name = "Paperless Automator"}]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic-settings",
+    "sqlalchemy>=2.0",
+    "alembic",
+    "httpx",
+    "redis",
+    "rq",
+    "typer",
+    "python-dotenv",
+    "jinja2",
+    "python-multipart"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx[http2]",
+    "ruff"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100

@@ -1,0 +1,456 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+    <div>
+        <p class="eyebrow">Paperless AI Titles</p>
+        <h2>LLM-powered titles for every Paperless document</h2>
+        <p>This app scans all your paperless documents, decides if they have bad titles and if so uses a LLM to generate meaningfull titles.</p>
+        <p>If you have title change approvals enabled you can approve the changes below</p>
+    </div>
+    <div class="hero-actions">
+        <button id="refresh-btn" class="contrast">Refresh now</button>
+        <a class="secondary" href="/settings">Configure rules →</a>
+    </div>
+</section>
+
+<section class="stats-grid">
+    <article>
+        <h3>Queue</h3>
+        <p id="queue-metrics" class="metric">—</p>
+    </article>
+    <article>
+        <h3>Scanner</h3>
+        <p id="scanner-status" class="metric">—</p>
+    </article>
+</section>
+
+<section class="panel-grid">
+    <article class="wide-card">
+        <header>
+            <h3>Pending approvals</h3>
+            <p class="hint">Review the changes suggested by llm.</p>
+        </header>
+        <div id="approvals" class="approvals-list"></div>
+    </article>
+</section>
+
+<section class="panel-grid">
+    <article class="wide-card">
+        <header>
+            <h3>Queue activity</h3>
+            <p class="hint">Only queued and running jobs appear here.</p>
+        </header>
+        <div id="activity" class="queue-activity scroll-panel"></div>
+    </article>
+</section>
+
+<section class="panel-grid">
+    <article class="wide-card">
+        <header>
+            <h3>Force reprocess</h3>
+            <p class="hint">Kick off bulk retries or target specific documents without leaving the dashboard.</p>
+        </header>
+        <div class="stack">
+            <label for="process-existing-checkbox">
+                <input id="process-existing-checkbox" type="checkbox" />
+                Also process documents where title was set
+            </label>
+            <div class="reprocess-actions">
+                <button type="button" class="contrast" data-reprocess-scope="all">Reprocess all</button>
+                <button type="button" class="secondary" data-reprocess-scope="failed">Reprocess failed</button>
+            </div>
+            <form id="reprocess-form" class="stack">
+                <label>
+                    Document IDs (comma separated)
+                    <input type="text" name="document_ids" placeholder="102, 204, 506" />
+                </label>
+                <button class="secondary" type="submit">Reprocess selected</button>
+            </form>
+            <p id="reprocess-status" class="hint muted" hidden>Nothing queued yet.</p>
+        </div>
+    </article>
+</section>
+
+<script>
+const activityEl = document.getElementById('activity');
+const queueEl = document.getElementById('queue-metrics');
+const scannerEl = document.getElementById('scanner-status');
+const approvalsEl = document.getElementById('approvals');
+const refreshBtn = document.getElementById('refresh-btn');
+let approvalsState = { items: [], total: 0, page: 1, limit: 5 };
+let approvalsListExpanded = false;
+
+async function fetchJSON(url, options) {
+    const res = await fetch(url, options);
+    if (!res.ok) {
+        const detail = await res.text();
+        throw new Error(detail || res.statusText);
+    }
+    return res.json();
+}
+
+function totalApprovalPages(state = approvalsState) {
+    if (!state.total) {
+        return state.items.length ? 1 : 1;
+    }
+    return Math.max(1, Math.ceil(state.total / state.limit));
+}
+
+function renderApprovals(state = approvalsState) {
+    if (!state.items.length) {
+        return '<div class="approval-empty"><p class="muted">No documents are waiting for approval.</p></div>';
+    }
+    const hero = renderPrimaryApproval(state.items[0]);
+    const toggleLabel = approvalsListExpanded ? 'Hide queue' : `Show queue (${state.total})`;
+    const paginationLabel = `Page ${state.page} of ${totalApprovalPages(state)}`;
+    const listControls = `
+        <div class="approval-list-toggle">
+            <button type="button" class="ghost" data-approval-action="toggle-list">${toggleLabel}</button>
+            <span class="muted small">${paginationLabel}</span>
+        </div>`;
+    const listMarkup = approvalsListExpanded ? renderApprovalList(state) : '';
+    return `
+        <div class="approval-shell">
+            ${hero}
+            ${listControls}
+            ${listMarkup}
+        </div>
+    `;
+}
+
+function renderPrimaryApproval(item) {
+    const confidence = item.confidence !== null && item.confidence !== undefined
+        ? `${(item.confidence * 100).toFixed(1)}%`
+        : '—';
+    const ocrExcerpt = item.ocr_excerpt
+        ? `<div class="hero-ocr"><p class="muted small">${escapeHtml(item.ocr_excerpt)}</p></div>`
+        : '';
+    const detailBlocks = [];
+    if (item.suggestion) {
+        detailBlocks.push(`<details><summary>Raw LLM suggestion</summary><pre>${escapeHtml(JSON.stringify(item.suggestion, null, 2))}</pre></details>`);
+    }
+    if (item.evaluation) {
+        detailBlocks.push(`<details><summary>LLM evaluation</summary><pre>${escapeHtml(JSON.stringify(item.evaluation, null, 2))}</pre></details>`);
+    }
+    return `
+        <article class="approval-hero-card">
+            <div class="hero-head">
+                <div>
+                    <p class="doc-label">Document #${item.document_id}</p>
+                    <p class="muted small">${escapeHtml(item.reason)} · ${formatDate(item.created_at)}</p>
+                </div>
+                <span class="confidence-chip">Confidence ${confidence}</span>
+            </div>
+            <div class="hero-titles">
+                <div class="title-panel">
+                    <span class="label">Current title</span>
+                    <p class="title-text">${escapeHtml(item.existing_title || '—')}</p>
+                </div>
+                <div class="title-panel">
+                    <span class="label">Suggested title</span>
+                    <p class="title-text">${escapeHtml(item.suggested_title)}</p>
+                </div>
+            </div>
+            <div class="hero-meta">
+                <span class="info-chip">Doc #${item.document_id}</span>
+                <span class="info-chip">${confidence}</span>
+                <span class="muted small">${formatDate(item.created_at)}</span>
+            </div>
+            ${ocrExcerpt}
+            ${detailBlocks.length ? `<div class="hero-details">${detailBlocks.join('')}</div>` : ''}
+            <div class="decision-actions">
+                <button class="decision-button deny" data-approval-action="deny" data-document-id="${item.document_id}">✕ Deny</button>
+                <button class="decision-button approve" data-approval-action="approve" data-document-id="${item.document_id}">✓ Approve</button>
+            </div>
+        </article>
+    `;
+}
+
+function renderApprovalList(state) {
+    const rows = (state.items || []).map((item) => {
+        const confidence = item.confidence !== null && item.confidence !== undefined
+            ? `${(item.confidence * 100).toFixed(1)}%`
+            : '—';
+        const isPrimary = state.items[0] && item.document_id === state.items[0].document_id;
+        return `
+            <tr class="${isPrimary ? 'current' : ''}">
+                <td>#${item.document_id}</td>
+                <td>${escapeHtml(item.existing_title || '—')}</td>
+                <td>${escapeHtml(item.suggested_title)}</td>
+                <td>${confidence}</td>
+                <td class="approval-row-actions">
+                    <button class="secondary" data-approval-action="deny" data-document-id="${item.document_id}">Deny</button>
+                    <button class="contrast" data-approval-action="approve" data-document-id="${item.document_id}">Approve</button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+    const pages = totalApprovalPages(state);
+    return `
+        <div class="approval-list-panel">
+            <div class="approval-list-container">
+                ${rows
+                    ? `<table><thead><tr><th>Doc</th><th>Current</th><th>Suggested</th><th>Confidence</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+                    : '<p class="muted">No approvals to display.</p>'}
+            </div>
+            <div class="approval-pagination">
+                <button type="button" data-approval-action="paginate" data-direction="prev" ${state.page === 1 ? 'disabled' : ''}>Previous</button>
+                <span>Page ${state.page} of ${pages}</span>
+                <button type="button" data-approval-action="paginate" data-direction="next" ${state.page >= pages ? 'disabled' : ''}>Next</button>
+            </div>
+        </div>
+    `;
+}
+
+function applyApprovalsData(payload) {
+    approvalsState = {
+        items: payload.items || [],
+        total: payload.total ?? 0,
+        page: payload.page ?? 1,
+        limit: payload.limit ?? approvalsState.limit,
+    };
+    if (!approvalsState.items.length) {
+        approvalsListExpanded = false;
+    }
+}
+
+async function fetchApprovalsPage(page = approvalsState.page) {
+    const params = new URLSearchParams({
+        limit: approvalsState.limit,
+        page,
+    });
+    return fetchJSON(`/api/approvals?${params.toString()}`);
+}
+
+async function refreshApprovalsOnly(page = approvalsState.page) {
+    const data = await fetchApprovalsPage(page);
+    applyApprovalsData(data);
+    approvalsEl.innerHTML = renderApprovals();
+}
+
+const ACTIVE_JOB_STATUSES = new Set(['pending', 'queued', 'running']);
+
+function renderActivity(jobs) {
+    const activeJobs = jobs.filter(job => ACTIVE_JOB_STATUSES.has((job.status || '').toLowerCase()));
+    const activeMarkup = activeJobs.length
+        ? activeJobs.map(renderActiveJob).join('')
+        : '<p class="muted">The queue is quiet right now.</p>';
+    return `
+        <div class="activity-section">
+            <div class="activity-section-head">
+                <h4>Queued + running</h4>
+                <span class="hint">${activeJobs.length ? `${activeJobs.length} in flight` : 'Idle'}</span>
+            </div>
+            ${activeMarkup}
+        </div>
+    `;
+}
+
+function renderActiveJob(job) {
+    const updated = job.updated_at ? formatDate(job.updated_at) : formatDate(job.created_at);
+    const reason = job.reason ? `<p class="muted small">${escapeHtml(job.reason)}</p>` : '<p class="muted small">Waiting on worker...</p>';
+    return `
+        <div class="activity-item">
+            <div class="activity-primary">
+                <strong>Job #${job.id}</strong>
+                <p class="muted small">Document ${job.document_id}</p>
+                <p class="muted small">Source ${escapeHtml(job.source || '—')}</p>
+            </div>
+            <div class="activity-status">
+                ${statusBadge(job.status)}
+                <span class="muted small">Attempts ${job.attempt_count}</span>
+                <span class="muted small">Updated ${updated}</span>
+            </div>
+            <div class="activity-reason">
+                ${reason}
+            </div>
+        </div>
+    `;
+}
+
+
+function statusBadge(status) {
+    const label = status || 'unknown';
+    const normalized = label ? label.toLowerCase().replace(/[^a-z_]/g, '') : 'unknown';
+    const className = normalized || 'unknown';
+    return `<span class="status-badge status-${className}">${label}</span>`;
+}
+
+function formatDate(value) {
+    if (!value) return '';
+    return new Date(value).toLocaleString();
+}
+
+function escapeHtml(value) {
+    if (value === null || value === undefined) {
+        return '';
+    }
+    return String(value).replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+    }[char] || char));
+}
+
+async function refresh() {
+    const approvalsPromise = fetchApprovalsPage(approvalsState.page);
+    const [jobs, metrics, scanner, approvals] = await Promise.all([
+        fetchJSON('/api/jobs?limit=50'),
+        fetchJSON('/api/queue/metrics'),
+        fetchJSON('/api/scan/status'),
+        approvalsPromise,
+    ]);
+    activityEl.innerHTML = renderActivity(jobs);
+    queueEl.textContent = `Queued ${metrics.queued} · Running ${metrics.running} · Failed ${metrics.failed} · Completed today ${metrics.completed_today} · Awaiting approval ${metrics.awaiting_approval}`;
+    applyApprovalsData(approvals);
+    approvalsEl.innerHTML = renderApprovals();
+    const statusBits = [];
+    if (scanner.last_run) statusBits.push(`last run ${new Date(scanner.last_run).toLocaleTimeString()}`);
+    if (scanner.queued_this_run !== null) statusBits.push(`${scanner.queued_this_run} new jobs`);
+    if (scanner.last_error) statusBits.push(`⚠ ${scanner.last_error}`);
+    scannerEl.textContent = statusBits.join(' · ') || 'idle';
+}
+
+if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => refresh().catch(err => alert(err.message)));
+}
+
+if (approvalsEl) {
+    approvalsEl.addEventListener('click', async (event) => {
+        const actionEl = event.target.closest('[data-approval-action]');
+        if (!actionEl) return;
+        const action = actionEl.dataset.approvalAction;
+        if (action === 'toggle-list') {
+            approvalsListExpanded = !approvalsListExpanded;
+            approvalsEl.innerHTML = renderApprovals();
+            return;
+        }
+        if (action === 'paginate') {
+            const direction = actionEl.dataset.direction === 'next' ? 1 : -1;
+            const pages = totalApprovalPages();
+            const nextPage = Math.min(pages, Math.max(1, approvalsState.page + direction));
+            if (nextPage !== approvalsState.page) {
+                await refreshApprovalsOnly(nextPage);
+            }
+            return;
+        }
+        if (action === 'approve' || action === 'deny') {
+            const documentId = Number(actionEl.dataset.documentId);
+            if (!documentId) return;
+            const url = action === 'approve'
+                ? `/api/approvals/${documentId}/approve`
+                : `/api/approvals/${documentId}/deny`;
+            const working = action === 'approve' ? 'Applying…' : 'Denying…';
+            await handleApprovalAction(actionEl, url, working);
+        }
+    });
+}
+
+async function handleApprovalAction(button, url, workingLabel) {
+    button.disabled = true;
+    const original = button.textContent;
+    button.textContent = workingLabel;
+    try {
+        await fetchJSON(url, { method: 'POST' });
+        await refresh();
+    } catch (error) {
+        alert(error.message || 'Action failed');
+    } finally {
+        button.disabled = false;
+        button.textContent = original;
+    }
+}
+
+const reprocessForm = document.getElementById('reprocess-form');
+const reprocessStatusEl = document.getElementById('reprocess-status');
+const reprocessButtons = document.querySelectorAll('[data-reprocess-scope]');
+const includeExistingCheckbox = document.getElementById('process-existing-checkbox');
+
+function updateReprocessStatus(message) {
+    if (!reprocessStatusEl) return;
+    reprocessStatusEl.hidden = false;
+    reprocessStatusEl.textContent = message;
+}
+
+function shouldRespectExistingTitles() {
+    if (!includeExistingCheckbox) {
+        return true;
+    }
+    return !includeExistingCheckbox.checked;
+}
+
+function toggleWorkingState(button, workingLabel = 'Queuing…') {
+    if (!button) return () => {};
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = workingLabel;
+    return () => {
+        button.disabled = false;
+        button.textContent = originalLabel;
+    };
+}
+
+async function triggerReprocess(payload, triggerButton) {
+    const restore = toggleWorkingState(triggerButton);
+    updateReprocessStatus('Queuing jobs…');
+    try {
+        const result = await fetchJSON('/api/force-reprocess', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        updateReprocessStatus(`Queued ${result.queued} document${result.queued === 1 ? '' : 's'}.`);
+        refresh();
+    } catch (error) {
+        updateReprocessStatus(`⚠️ ${error.message || 'Reprocess failed'}`);
+    } finally {
+        restore();
+    }
+}
+
+if (reprocessButtons.length) {
+    reprocessButtons.forEach((button) => {
+        button.addEventListener('click', async () => {
+            const scope = button.dataset.reprocessScope || 'all';
+            const payload = {
+                scope,
+                respect_existing_titles: shouldRespectExistingTitles(),
+            };
+            await triggerReprocess(payload, button);
+        });
+    });
+}
+
+if (reprocessForm) {
+    reprocessForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const input = event.currentTarget.document_ids;
+        const raw = input.value.trim();
+        if (!raw) {
+            updateReprocessStatus('Add at least one document ID to reprocess.');
+            return;
+        }
+        const documentIds = raw
+            .split(',')
+            .map((value) => Number(value.trim()))
+            .filter((value) => Number.isFinite(value) && value > 0);
+        if (!documentIds.length) {
+            updateReprocessStatus('No valid document IDs detected.');
+            return;
+        }
+        const payload = {
+            scope: 'selected',
+            document_ids: documentIds,
+            respect_existing_titles: shouldRespectExistingTitles(),
+        };
+        await triggerReprocess(payload, event.currentTarget.querySelector('button[type="submit"]'));
+        event.currentTarget.reset();
+    });
+}
+
+refresh();
+setInterval(() => refresh().catch(() => {}), 5000);
+</script>
+{% endblock %}

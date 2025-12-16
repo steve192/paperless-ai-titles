@@ -1,0 +1,563 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+    <h2>Guided Setup</h2>
+    <p>Configure connections and preview how AI titles will look before enabling automation.</p>
+    <form id="setup-form" class="grid">
+        <label>
+            Paperless base URL
+            <input type="url" name="paperless_base_url" required />
+        </label>
+        <label>
+            Paperless API token
+            <input type="password" name="paperless_api_token" required />
+        </label>
+        <label class="picker-group">
+            <span class="label-heading">
+                Skip tag
+                <span class="info-dot" role="img" title="Documents with this tag stay untouched." aria-label="Documents with this tag stay untouched.">i</span>
+            </span>
+            <div class="picker-control" data-picker-container>
+                <input type="text" name="paperless_skip_tag" autocomplete="off" data-picker="tag" data-picker-field="paperless_skip_tag" />
+                <div class="picker-dropdown" data-picker-dropdown></div>
+                <button type="button" class="create-option" data-picker-create="tag" data-input="paperless_skip_tag" hidden>Create Paperless tag</button>
+            </div>
+            <span class="hint">Documents with this tag stay untouched.</span>
+        </label>
+        <label class="picker-group">
+            <span class="label-heading">
+                Required tag
+                <span class="info-dot" role="img" title="Only documents with this tag enter the queue." aria-label="Only documents with this tag enter the queue.">i</span>
+            </span>
+            <div class="picker-control" data-picker-container>
+                <input type="text" name="paperless_require_tag" autocomplete="off" data-picker="tag" data-picker-field="paperless_require_tag" />
+                <div class="picker-dropdown" data-picker-dropdown></div>
+                <button type="button" class="create-option" data-picker-create="tag" data-input="paperless_require_tag" hidden>Create Paperless tag</button>
+            </div>
+            <span class="hint">Only documents with this tag enter the queue.</span>
+        </label>
+        <label class="picker-group">
+            Original title custom field
+            <div class="picker-control" data-picker-container>
+                <input type="text" name="paperless_original_title_field" autocomplete="off" data-picker="custom-field" data-picker-field="paperless_original_title_field" />
+                <div class="picker-dropdown" data-picker-dropdown></div>
+                <button type="button" class="create-option" data-picker-create="custom-field" data-input="paperless_original_title_field" hidden>Create Paperless custom field</button>
+            </div>
+            <span class="hint">Select an existing Paperless custom field (slug) or create a new text field.</span>
+        </label>
+        <label>
+            LLM endpoint
+            <input type="url" name="llm_base_url" required />
+        </label>
+        <label>
+            LLM API token
+            <input type="password" name="llm_api_token" required />
+        </label>
+        <label>
+            LLM model name
+            <input type="text" name="llm_model_name" />
+        </label>
+        <label>
+            Confidence threshold
+            <input type="number" step="0.05" min="0" max="1" name="llm_confidence_threshold" />
+        </label>
+        <fieldset class="approval-fieldset wide">
+            <legend>Approval mode</legend>
+            <p class="hint">Decide whether titles are applied immediately or queued for manual review.</p>
+            <label class="toggle">
+                <input type="radio" name="auto_apply_titles" value="true" checked />
+                <span>Apply titles automatically</span>
+            </label>
+            <label class="toggle">
+                <input type="radio" name="auto_apply_titles" value="false" />
+                <span>Require manual approval before applying</span>
+            </label>
+        </fieldset>
+    </form>
+    <div class="actions">
+        <button id="preview-btn">Test connection & list documents</button>
+        <button id="complete-btn" class="secondary">Start automation</button>
+    </div>
+    <p id="setup-status"></p>
+</section>
+<section>
+    <h3>Paperless documents preview</h3>
+    <div id="preview-table" class="scroll"></div>
+</section>
+<section>
+    <h3>Dry run result</h3>
+    <div id="dry-run-card" class="dryrun-card empty">
+        <p class="muted">Select a document to simulate title generation.</p>
+    </div>
+    <details id="dry-run-raw" class="dryrun-raw" hidden>
+        <summary>View raw JSON response</summary>
+        <pre id="dry-run-json"></pre>
+    </details>
+</section>
+<script>
+const dryRunCard = document.getElementById('dry-run-card');
+const dryRunRaw = document.getElementById('dry-run-raw');
+const dryRunJson = document.getElementById('dry-run-json');
+const pickerInputs = document.querySelectorAll('[data-picker]');
+const metadataStore = {
+    key: null,
+    promise: null,
+    tags: [],
+    customFields: [],
+};
+
+async function fetchSetupState() {
+    const res = await fetch('/api/setup/state');
+    const data = await res.json();
+    const form = document.getElementById('setup-form');
+    Object.entries(data.defaults || {}).forEach(([key, value]) => applyDefaultValue(form, key, value));
+    if (data.defaults?.paperless_base_url && data.defaults?.paperless_api_token) {
+        ensureMetadataLoaded().catch(() => {});
+    }
+}
+
+function gatherSettings() {
+    const form = document.getElementById('setup-form');
+    const formData = new FormData(form);
+    const result = {};
+    for (const [key, value] of formData.entries()) {
+        if (value !== '') {
+            result[key] = value;
+        }
+    }
+    form.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+        if (!result.hasOwnProperty(input.name)) {
+            result[input.name] = input.checked;
+        }
+    });
+    return result;
+}
+
+function applyDefaultValue(form, key, value) {
+    const inputs = form.querySelectorAll(`[name="${key}"]`);
+    if (!inputs.length) {
+        return;
+    }
+    inputs.forEach((input) => {
+        if (input.type === 'radio') {
+            input.checked = String(value) === input.value;
+        } else if (input.type === 'checkbox') {
+            input.checked = value === true || value === 'true';
+        } else if (value !== undefined && value !== null) {
+            input.value = value;
+        }
+    });
+}
+
+function metadataKey(settings) {
+    return `${settings.paperless_base_url || ''}::${settings.paperless_api_token || ''}`;
+}
+
+function requirePaperlessCredentials(settings) {
+    if (!settings.paperless_base_url || !settings.paperless_api_token) {
+        throw new Error('Enter your Paperless URL and API token to load tags.');
+    }
+}
+
+async function ensureMetadataLoaded(force = false) {
+    const settings = gatherSettings();
+    requirePaperlessCredentials(settings);
+    const key = metadataKey(settings);
+    if (!force && metadataStore.key === key && metadataStore.tags.length && metadataStore.customFields.length) {
+        return metadataStore;
+    }
+    if (!force && metadataStore.promise && metadataStore.key === key) {
+        return metadataStore.promise;
+    }
+    metadataStore.key = key;
+    const loader = fetchMetadata(settings)
+        .catch(error => {
+            metadataStore.key = null;
+            throw error;
+        })
+        .finally(() => {
+            metadataStore.promise = null;
+        });
+    metadataStore.promise = loader;
+    return loader;
+}
+
+async function fetchMetadata(settings) {
+    const payload = { settings };
+    const res = await fetch('/api/setup/metadata', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+        throw new Error('Unable to load Paperless metadata.');
+    }
+    const data = await res.json();
+    metadataStore.tags = data.tags || [];
+    metadataStore.customFields = data.custom_fields || [];
+    refreshPickerOptions('tag');
+    refreshPickerOptions('custom-field');
+    return metadataStore;
+}
+
+function refreshPickerOptions(kind) {
+    pickerInputs.forEach(input => {
+        if (input.dataset.picker === kind) {
+            updateCreateButton(input);
+            if (document.activeElement === input) {
+                updatePickerDropdown(input);
+            }
+        }
+    });
+}
+
+function getPickerDropdown(input) {
+    const container = input.closest('[data-picker-container]');
+    return container ? container.querySelector('[data-picker-dropdown]') : null;
+}
+
+function showPickerDropdown(input) {
+    closeAllPickerDropdowns();
+    const dropdown = getPickerDropdown(input);
+    if (!dropdown) return;
+    updatePickerDropdown(input);
+    dropdown.classList.add('visible');
+}
+
+function hidePickerDropdown(input) {
+    const dropdown = getPickerDropdown(input);
+    if (!dropdown) return;
+    dropdown.classList.remove('visible');
+}
+
+function closeAllPickerDropdowns() {
+    document.querySelectorAll('.picker-dropdown.visible').forEach(dropdown => dropdown.classList.remove('visible'));
+}
+
+function updatePickerDropdown(input) {
+    const dropdown = getPickerDropdown(input);
+    if (!dropdown) return;
+    const kind = input.dataset.picker;
+    const query = (input.value || '').toLowerCase().trim();
+    const options = kind === 'tag' ? metadataStore.tags : metadataStore.customFields;
+    if (!options.length) {
+        dropdown.innerHTML = '<div class="picker-option muted">Load Paperless metadata first.</div>';
+        dropdown.classList.add('visible');
+        return;
+    }
+    const matches = options
+        .filter(option => {
+            const target = (option.name || option.slug || '').toLowerCase();
+            return target.includes(query);
+        })
+        .slice(0, 8);
+    if (!matches.length) {
+        dropdown.innerHTML = '<div class="picker-option muted">No matches. Enter a new name to create it in Paperless.</div>';
+        dropdown.classList.add('visible');
+        return;
+    }
+    dropdown.innerHTML = matches
+        .map(option => {
+            const label = option.name || option.slug || '';
+            const value = kind === 'tag' ? (option.name || option.slug || '') : (option.slug || option.name || '');
+            return `<div class="picker-option" data-value="${escapeHtml(value)}">${escapeHtml(label)}</div>`;
+        })
+        .join('');
+    dropdown.classList.add('visible');
+}
+
+async function previewDocuments() {
+    setStatus('Testing connection…');
+    const payload = { settings: gatherSettings() };
+    const res = await fetch('/api/setup/preview-documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+        setStatus('Failed to contact Paperless. Check credentials.');
+        return;
+    }
+    const data = await res.json();
+    renderPreview(data.results || []);
+    ensureMetadataLoaded().catch(() => {});
+    setStatus(`Found ${data.results?.length || 0} documents. Run a dry test to inspect titles.`);
+}
+
+function renderPreview(documents) {
+    if (!documents.length) {
+        document.getElementById('preview-table').innerHTML = '<p>No documents returned.</p>';
+        return;
+    }
+    const rows = documents.map(doc => `
+        <tr>
+            <td>${doc.id}</td>
+            <td>${doc.title || ''}</td>
+            <td><button data-doc="${doc.id}">Dry run</button></td>
+        </tr>`).join('');
+    const table = `
+        <table>
+            <thead><tr><th>ID</th><th>Current title</th><th></th></tr></thead>
+            <tbody>${rows}</tbody>
+        </table>`;
+    const container = document.getElementById('preview-table');
+    container.innerHTML = table;
+    container.querySelectorAll('button[data-doc]').forEach(btn => {
+        btn.addEventListener('click', () => dryRun(btn.dataset.doc));
+    });
+}
+
+function setupPickerControls() {
+    pickerInputs.forEach(input => {
+        input.addEventListener('focus', () => {
+            showPickerDropdown(input);
+            ensureMetadataLoaded()
+                .then(() => updatePickerDropdown(input))
+                .catch(handleMetadataError);
+        });
+        input.addEventListener('input', () => {
+            updateCreateButton(input);
+            updatePickerDropdown(input);
+        });
+        input.addEventListener('blur', () => {
+            setTimeout(() => hidePickerDropdown(input), 120);
+        });
+    });
+    document.querySelectorAll('[data-picker-create]').forEach(button => {
+        button.addEventListener('click', () => handleCreateButtonClick(button));
+    });
+    document.querySelectorAll('[data-picker-dropdown]').forEach(dropdown => {
+        dropdown.addEventListener('mousedown', event => event.preventDefault());
+        dropdown.addEventListener('click', event => {
+            const option = event.target.closest('.picker-option[data-value]');
+            if (!option) {
+                return;
+            }
+            const container = dropdown.closest('[data-picker-container]');
+            const input = container?.querySelector('[data-picker]');
+            if (!input) {
+                return;
+            }
+            input.value = option.dataset.value;
+            updateCreateButton(input);
+            hidePickerDropdown(input);
+        });
+    });
+    document.addEventListener('click', event => {
+        if (!event.target.closest('[data-picker-container]')) {
+            closeAllPickerDropdowns();
+        }
+    });
+}
+
+function updateCreateButton(input) {
+    const button = document.querySelector(`[data-picker-create][data-input="${input.name}"]`);
+    if (!button) return;
+    const value = (input.value || '').trim();
+    if (!value || pickerValueExists(input.dataset.picker, value)) {
+        button.hidden = true;
+        return;
+    }
+    button.textContent = input.dataset.picker === 'tag'
+        ? `Create Paperless tag "${value}"`
+        : `Create Paperless custom field "${value}"`;
+    button.hidden = false;
+}
+
+function pickerValueExists(kind, value) {
+    if (!value) return false;
+    if (kind === 'tag') {
+        return metadataStore.tags.some(tag => tag?.name === value || tag?.slug === value);
+    }
+    return metadataStore.customFields.some(field => field?.slug === value || field?.name === value);
+}
+
+function handleMetadataError(error) {
+    if (!error) return;
+    console.warn('Metadata load issue', error);
+    if (error.message) {
+        setStatus(error.message);
+    }
+}
+
+async function handleCreateButtonClick(button) {
+    const type = button.dataset.pickerCreate;
+    const inputName = button.dataset.input;
+    const input = document.querySelector(`[name="${inputName}"]`);
+    if (!input) return;
+    const value = (input.value || '').trim();
+    if (!value) return;
+    button.disabled = true;
+    const originalLabel = button.textContent;
+    button.textContent = type === 'tag' ? 'Creating Paperless tag…' : 'Creating Paperless field…';
+    try {
+        const created = type === 'tag'
+            ? await createTagRequest(value)
+            : await createCustomFieldRequest(value);
+        if (type === 'tag') {
+            metadataStore.tags.push(created);
+            refreshPickerOptions('tag');
+            input.value = created.name;
+        } else {
+            metadataStore.customFields.push(created);
+            refreshPickerOptions('custom-field');
+            input.value = created.slug || created.name;
+        }
+        hidePickerDropdown(input);
+        setStatus(`Paperless ${type === 'tag' ? 'tag' : 'custom field'} created successfully.`);
+    } catch (error) {
+        console.error('Creation failed', error);
+        setStatus(error.message || 'Unable to create resource in Paperless.');
+    } finally {
+        button.disabled = false;
+        button.textContent = originalLabel;
+        updateCreateButton(input);
+    }
+}
+
+async function createTagRequest(name) {
+    const settings = gatherSettings();
+    requirePaperlessCredentials(settings);
+    const payload = { settings, name };
+    const res = await fetch('/api/setup/create-tag', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+        throw new Error('Paperless rejected the new tag.');
+    }
+    return res.json();
+}
+
+async function createCustomFieldRequest(name) {
+    const settings = gatherSettings();
+    requirePaperlessCredentials(settings);
+    const payload = { settings, name, data_type: 'string' };
+    const res = await fetch('/api/setup/create-custom-field', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+        throw new Error('Paperless rejected the new custom field.');
+    }
+    return res.json();
+}
+
+function resetDryRunPanel() {
+    dryRunCard.classList.add('empty');
+    dryRunCard.innerHTML = '<p class="muted">Select a document to simulate title generation.</p>';
+    dryRunRaw.hidden = true;
+    dryRunRaw.open = false;
+    dryRunJson.textContent = '';
+}
+
+function showDryRunLoading(documentId) {
+    dryRunCard.classList.remove('empty');
+    dryRunCard.innerHTML = `<p class="muted">Running dry simulation for document ${documentId}…</p>`;
+    dryRunRaw.hidden = true;
+    dryRunRaw.open = false;
+}
+
+function showDryRunError(message) {
+    dryRunCard.classList.remove('empty');
+    dryRunCard.innerHTML = `<p class="error">${escapeHtml(message)}</p>`;
+    dryRunRaw.hidden = true;
+    dryRunRaw.open = false;
+}
+
+function renderDryRunResult(result) {
+    const statusLabel = result.needs_update ? 'Title update suggested' : 'Existing title approved';
+    const statusClass = result.needs_update ? 'badge badge-warn' : 'badge badge-good';
+    const followupLabel = result.needs_update ? 'Suggested title' : 'Title to keep';
+    const followupValue = result.needs_update ? (result.new_title || result.existing_title || '—') : (result.existing_title || '—');
+
+    dryRunCard.classList.remove('empty');
+    dryRunCard.innerHTML = `
+        <header>
+            <span class="badge ${statusClass}">${statusLabel}</span>
+            <span class="muted">Document #${result.document_id}</span>
+        </header>
+        <p class="reason">${escapeHtml(result.reason)}</p>
+        <div class="dryrun-grid">
+            <div class="dryrun-field">
+                <span class="label">Current title</span>
+                <p class="value">${escapeHtml(result.existing_title || '—')}</p>
+            </div>
+            <div class="dryrun-field">
+                <span class="label">${followupLabel}</span>
+                <p class="value">${escapeHtml(followupValue)}</p>
+            </div>
+        </div>
+    `;
+    dryRunRaw.hidden = false;
+    dryRunRaw.open = false;
+    dryRunJson.textContent = JSON.stringify(result, null, 2);
+}
+
+function escapeHtml(value) {
+    if (value === null || value === undefined) {
+        return '';
+    }
+    return String(value).replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+    }[char] || char));
+}
+
+async function dryRun(documentId) {
+    setStatus(`Running dry simulation for document ${documentId}…`);
+    showDryRunLoading(documentId);
+    const payload = { document_id: Number(documentId), settings: gatherSettings() };
+    try {
+        const res = await fetch('/api/setup/dry-run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+            setStatus('Dry run failed. Check logs.');
+            showDryRunError('Dry run failed. Check logs.');
+            return;
+        }
+        const data = await res.json();
+        renderDryRunResult(data);
+        setStatus('Dry run completed. Review the proposed title below.');
+    } catch (error) {
+        console.error('Dry run error', error);
+        showDryRunError('Dry run could not complete. Check your connection.');
+        setStatus('Dry run failed. Check logs.');
+    }
+}
+
+async function completeSetup() {
+    setStatus('Saving settings and starting automation…');
+    const payload = { settings: gatherSettings() };
+    const res = await fetch('/api/setup/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+        setStatus('Unable to finalize setup.');
+        return;
+    }
+    setStatus('Setup complete! Redirecting to dashboard…');
+    setTimeout(() => window.location.href = '/', 1200);
+}
+
+function setStatus(message) {
+    document.getElementById('setup-status').textContent = message;
+}
+
+resetDryRunPanel();
+setupPickerControls();
+fetchSetupState();
+document.getElementById('preview-btn').addEventListener('click', previewDocuments);
+document.getElementById('complete-btn').addEventListener('click', completeSetup);
+</script>
+{% endblock %}

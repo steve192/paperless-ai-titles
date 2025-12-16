@@ -1,0 +1,125 @@
+services:
+  app:
+    build: .
+    command: ["uvicorn", "paperless_ai_titles.fastapi_app:app", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      - APP_HOST=0.0.0.0
+      - APP_PORT=8080
+      - SQLITE_PATH=/data/paperless_ai_titles.db
+      - REDIS_URL=redis://redis:6379/0
+      - PAPERLESS_BASE_URL=http://paperless:8000
+      - PAPERLESS_API_TOKEN=65af429ae6ece503632344677b64fc48de4f6f11
+      - PAPERLESS_SKIP_TAG=skip-ai-title
+      - PAPERLESS_REQUIRE_TAG=
+      - PAPERLESS_ORIGINAL_TITLE_FIELD=original_title
+      - PAPERLESS_HOOK_TOKEN=testtoken
+      - LLM_BASE_URL=http://local-llm:8080/v1/chat/completions
+      - LLM_API_TOKEN=none
+      - LLM_MODEL_NAME=llama-3.2-3b-instruct:q8_0
+      - LLM_CONFIDENCE_THRESHOLD=0.6
+      - LLM_REQUEST_TIMEOUT=300
+      - AUTO_APPLY_TITLES=true
+      - SCANNER_ENABLED=true
+      - SCAN_INTERVAL_SECONDS=60
+      - SCANNER_PAGE_SIZE=10
+      - MAX_JOBS_PER_SCAN=10
+      - QUEUE_NAME=documents
+      - JOB_RETRY_DELAYS=30,90,300
+    ports:
+      - "8080:8080"
+    volumes:
+      - app_data:/data
+    depends_on:
+      - redis
+      - paperless
+      # - local-llm
+
+  worker:
+    build: .
+    command: ["python", "-m", "paperless_ai_titles.rq_worker_runner"]
+    environment:
+      - SQLITE_PATH=/data/paperless_ai_titles.db
+      - REDIS_URL=redis://redis:6379/0
+      - PAPERLESS_BASE_URL=http://paperless:8000
+      - PAPERLESS_API_TOKEN=supersecret
+      - PAPERLESS_SKIP_TAG=skip-ai-title
+      - PAPERLESS_REQUIRE_TAG=
+      - PAPERLESS_ORIGINAL_TITLE_FIELD=original_title
+      - PAPERLESS_HOOK_TOKEN=testtoken
+      - LLM_BASE_URL=http://local-llm:8000/v1/chat/completions
+      - LLM_API_TOKEN=none
+      - LLM_MODEL_NAME=local-title-model
+      - LLM_CONFIDENCE_THRESHOLD=0.6
+      - LLM_REQUEST_TIMEOUT=300
+      - AUTO_APPLY_TITLES=true
+      - SCANNER_ENABLED=true
+      - SCAN_INTERVAL_SECONDS=60
+      - SCANNER_PAGE_SIZE=10
+      - MAX_JOBS_PER_SCAN=10
+      - QUEUE_NAME=documents
+      - JOB_RETRY_DELAYS=30,90,300
+    volumes:
+      - app_data:/data
+    depends_on:
+      - redis
+      - paperless
+      # - local-llm
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  paperless:
+    image: ghcr.io/paperless-ngx/paperless-ngx:latest
+    environment:
+      - PAPERLESS_ADMIN_USER=admin
+      - PAPERLESS_ADMIN_PASSWORD=admin
+      - PAPERLESS_SECRET_KEY=supersecretkey
+      - PAPERLESS_URL=http://paperless:8000
+      - PAPERLESS_ALLOWED_HOSTS=*
+      - PAPERLESS_TIME_ZONE=UTC
+      - PAPERLESS_CONSUMPTION_DIR=/consume
+      - PAPERLESS_DATA_DIR=/data
+      - PAPERLESS_MEDIA_ROOT=/media
+      - PAPERLESS_DBHOST=paperless-db
+      - PAPERLESS_DBUSER=paperless
+      - PAPERLESS_DBPASS=paperless
+      - PAPERLESS_DBNAME=paperless
+      - PAPERLESS_REDIS=redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    volumes:
+      - paperless_data:/data
+      - paperless_media:/media
+      - paperless_consume:/consume
+    depends_on:
+      - redis
+      - paperless-db
+
+  paperless-db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=paperless
+      - POSTGRES_USER=paperless
+      - POSTGRES_PASSWORD=paperless
+    volumes:
+      - paperless_db_data:/var/lib/postgresql/data
+
+  local-llm:
+    image: localai/localai:latest-aio-cpu
+    ports:
+      - "8081:8080"
+    volumes:
+      - llm_data:/models:cached
+
+volumes:
+  app_data:
+  redis_data:
+  paperless_data:
+  paperless_media:
+  paperless_consume:
+  paperless_db_data:
+  llm_data:

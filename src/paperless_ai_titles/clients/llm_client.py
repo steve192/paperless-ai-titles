@@ -1,0 +1,174 @@
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
+
+import httpx
+
+from ..core.config import Settings
+from ..services.settings import SettingsService
+
+logger = logging.getLogger(__name__)
+
+@dataclass
+class TitleSuggestion:
+    title: str
+    raw: Dict[str, Any]
+    confidence: Optional[float] = None
+
+
+@dataclass
+class TitleEvaluation:
+    acceptable: bool
+    raw: Dict[str, Any]
+    confidence: Optional[float] = None
+
+
+class TitleLLMClient:
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or SettingsService().effective_settings()
+        self.base_url = str(self.settings.llm_base_url)
+        self.headers = {"Authorization": f"Bearer {self.settings.llm_api_token}"}
+
+    async def _post(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        timeout = httpx.Timeout(self.settings.llm_request_timeout)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(self.base_url, json=payload, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+
+    async def propose_title(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> TitleSuggestion:
+        metadata = metadata or {}
+        context_lines: list[str] = []
+        correspondent = metadata.get("correspondent") or {}
+        if correspondent:
+            context_lines.append(f"Correspondent: {correspondent.get('name')}")
+        doc_type = metadata.get("document_type") or {}
+        if doc_type:
+            context_lines.append(f"Document type: {doc_type.get('name')}")
+        if metadata.get("created"):
+            context_lines.append(f"Date: {metadata['created']}")
+        context = "\n".join(context_lines)
+        snippet = self._truncate_text(text)
+        instructions = (
+            "You generate concise, specific document titles. Respond ONLY with JSON in the format "
+            '{"title":"<title>","confidence":0-1}. '
+            "Confidence must be a float between 0 and 1."
+        )
+        user_prompt = f"{context}\nDocument text snippet:\n{snippet}" if context else f"Document text snippet:\n{snippet}"
+        payload = {
+            "model": self.settings.llm_model_name,
+            "temperature": 0.3,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": instructions,
+                },
+                {
+                    "role": "user",
+                    "content": user_prompt,
+                },
+            ],
+        }
+        raw = await self._post(payload)
+        content = self._extract_content(raw)
+        parsed = self._parse_json_content(content)
+        title = (parsed.get("title") if isinstance(parsed, dict) else content).strip()
+        confidence = self._normalize_confidence(parsed.get("confidence")) if isinstance(parsed, dict) else None
+        logger.debug(
+            "LLM propose_title completed (len=%s) => '%s' confidence=%s",
+            len(text),
+            title.strip(),
+            confidence,
+        )
+        return TitleSuggestion(title=title.strip(), raw=raw, confidence=confidence)
+
+    async def evaluate_title(self, title: str, text: str) -> TitleEvaluation:
+        snippet = self._truncate_text(text)
+        instructions = (
+            "Decide if a proposed document title matches the content. No generic titles allowed. Respond ONLY with JSON in the format "
+            '{"decision":"GOOD|BAD","acceptable":true|false,"confidence":0-1}. '
+            "Confidence must be a float between 0 and 1."
+        )
+        payload = {
+            "model": self.settings.llm_model_name,
+            "temperature": 0.2,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": instructions,
+                },
+                {
+                    "role": "user",
+                    "content": f"Title: {title}\nDocument excerpt:\n{snippet}",
+                },
+            ],
+        }
+        raw = await self._post(payload)
+        content = self._extract_content(raw)
+        parsed = self._parse_json_content(content)
+        decision_text = (parsed.get("decision") if isinstance(parsed, dict) else content).strip()
+        acceptable_flag = parsed.get("acceptable") if isinstance(parsed, dict) else None
+        decision = decision_text.upper()
+        acceptable = acceptable_flag if isinstance(acceptable_flag, bool) else decision.startswith("GOOD")
+        confidence = self._normalize_confidence(parsed.get("confidence")) if isinstance(parsed, dict) else None
+        logger.debug(
+            "LLM evaluate_title decision=%s acceptable=%s confidence=%s",
+            decision,
+            acceptable,
+            confidence,
+        )
+        return TitleEvaluation(acceptable=acceptable, raw=raw, confidence=confidence)
+
+    @staticmethod
+    def _extract_content(response: Dict[str, Any]) -> str:
+        choices = response.get("choices", [])
+        if not choices:
+            return ""
+        message = choices[0].get("message", {})
+        content = message.get("content", "")
+        return content.strip()
+
+    def _truncate_text(self, text: str) -> str:
+        limit = max(1, int(self.settings.llm_prompt_char_limit))
+        return text[:limit]
+
+    @staticmethod
+    def _parse_json_content(content: str) -> Dict[str, Any] | None:
+        text = content.strip()
+        if not text:
+            return None
+        attempts = [text]
+        if text.startswith("```"):
+            attempts.append(TitleLLMClient._strip_code_fence(text))
+        for candidate in attempts:
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+        return None
+
+    @staticmethod
+    def _strip_code_fence(text: str) -> str:
+        lines = text.splitlines()
+        if not lines:
+            return text
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _normalize_confidence(value: Any) -> Optional[float]:
+        try:
+            confidence = float(value)
+        except (TypeError, ValueError):
+            return None
+        if confidence < 0:
+            return 0.0
+        if confidence > 1:
+            return 1.0
+        return confidence

@@ -1,0 +1,1 @@
+"""Core primitives for Paperless AI Titles."""

@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+    <div>
+        <p class="eyebrow">Processing archive</p>
+        <h2>Job history</h2>
+    </div>
+    <div class="hero-actions">
+        <button id="history-refresh" class="secondary" type="button">Refresh results</button>
+    </div>
+</section>
+
+<section class="history-panel">
+    <form id="history-filter-form" class="history-filters">
+        <label>
+            Status
+            <select id="history-status" name="status">
+                <option value="">All statuses</option>
+                {% for status in job_statuses %}
+                <option value="{{ status }}">{{ status.replace('_', ' ') | title }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            Source
+            <input id="history-source" name="source" type="text" placeholder="scanner" />
+        </label>
+        <label>
+            Document ID
+            <input id="history-document-id" name="document_id" type="number" min="1" placeholder="102" />
+        </label>
+        <label>
+            Sort
+            <select id="history-sort" name="sort">
+                <option value="created_at:desc">Newest queued</option>
+                <option value="updated_at:desc">Recently updated</option>
+                <option value="completed_at:desc">Recently completed</option>
+                <option value="created_at:asc">Oldest first</option>
+            </select>
+        </label>
+        <label>
+            Page size
+            <select id="history-limit" name="limit">
+                <option value="25">25 rows</option>
+                <option value="50">50 rows</option>
+                <option value="100">100 rows</option>
+            </select>
+        </label>
+    </form>
+
+    <article class="wide-card">
+        <header class="history-header">
+            <div>
+                <h3>Job history</h3>
+                <p class="hint" id="history-count">Loading…</p>
+            </div>
+        </header>
+        <div class="history-table-wrapper scroll-panel" id="history-table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Document</th>
+                        <th>Status</th>
+                        <th>Source</th>
+                        <th>Attempts</th>
+                        <th>Updated</th>
+                        <th>Completed</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody id="history-table-body">
+                    <tr><td colspan="8">Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <footer class="history-pagination" id="history-pagination">
+            <span class="muted">Loading pagination…</span>
+        </footer>
+    </article>
+</section>
+
+<script>
+const tableBody = document.getElementById('history-table-body');
+const paginationEl = document.getElementById('history-pagination');
+const refreshBtn = document.getElementById('history-refresh');
+const countEl = document.getElementById('history-count');
+const filterForm = document.getElementById('history-filter-form');
+const statusSelect = document.getElementById('history-status');
+const sourceInput = document.getElementById('history-source');
+const documentInput = document.getElementById('history-document-id');
+const sortSelect = document.getElementById('history-sort');
+const limitSelect = document.getElementById('history-limit');
+
+const historyState = {
+    page: 1,
+    limit: Number(limitSelect?.value) || 25,
+    status: '',
+    source: '',
+    documentId: '',
+    sortBy: 'created_at',
+    sortDir: 'desc',
+};
+
+async function fetchJSON(url, options) {
+    const res = await fetch(url, options);
+    if (!res.ok) {
+        const detail = await res.text();
+        throw new Error(detail || res.statusText);
+    }
+    return res.json();
+}
+
+function updateStateFromControls() {
+    historyState.status = statusSelect?.value || '';
+    historyState.source = (sourceInput?.value || '').trim();
+    const docId = documentInput?.value ? Number(documentInput.value) : '';
+    historyState.documentId = Number.isFinite(docId) && docId > 0 ? docId : '';
+    if (sortSelect) {
+        const [column, direction] = (sortSelect.value || 'created_at:desc').split(':');
+        historyState.sortBy = column || 'created_at';
+        historyState.sortDir = direction === 'asc' ? 'asc' : 'desc';
+    }
+    historyState.limit = Number(limitSelect?.value) || 25;
+}
+
+function buildHistoryQuery() {
+    const params = new URLSearchParams({
+        page: historyState.page,
+        limit: historyState.limit,
+        sort_by: historyState.sortBy,
+        sort_dir: historyState.sortDir,
+    });
+    if (historyState.status) params.set('status', historyState.status);
+    if (historyState.source) params.set('source', historyState.source);
+    if (historyState.documentId) params.set('document_id', historyState.documentId);
+    return params.toString();
+}
+
+function renderHistoryRows(items) {
+    if (!items.length) {
+        return '<tr><td colspan="8" class="muted">No jobs matched the filters.</td></tr>';
+    }
+    return items.map(renderHistoryRow).join('');
+}
+
+function renderHistoryRow(job) {
+    const updated = job.updated_at ? formatDate(job.updated_at) : '—';
+    const completed = job.completed_at ? formatDate(job.completed_at) : '—';
+    const notes = job.reason || job.last_error || '—';
+    return `
+        <tr>
+            <td>#${job.id}</td>
+            <td>${job.document_id}</td>
+            <td>${statusBadge(job.status)}</td>
+            <td>${escapeHtml(job.source || '—')}</td>
+            <td>${job.attempt_count}</td>
+            <td>${updated}</td>
+            <td>${completed}</td>
+            <td><p class="muted small">${escapeHtml(notes)}</p></td>
+        </tr>
+    `;
+}
+
+function renderPagination(total, page, limit) {
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    paginationEl.innerHTML = `
+        <div class="pagination-controls">
+            <button type="button" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>Previous</button>
+            <span class="muted">Page ${page} of ${totalPages}</span>
+            <button type="button" data-page="${page + 1}" ${page >= totalPages ? 'disabled' : ''}>Next</button>
+        </div>
+    `;
+}
+
+function statusBadge(status) {
+    const label = status || 'unknown';
+    const normalized = label.toLowerCase().replace(/[^a-z_]/g, '') || 'unknown';
+    return `<span class="status-badge status-${normalized}">${label}</span>`;
+}
+
+function formatDate(value) {
+    if (!value) return '—';
+    return new Date(value).toLocaleString();
+}
+
+function escapeHtml(value) {
+    if (value === null || value === undefined) return '';
+    return String(value).replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+    }[char] || char));
+}
+
+async function loadHistory() {
+    updateStateFromControls();
+    tableBody.innerHTML = '<tr><td colspan="8">Loading…</td></tr>';
+    countEl.textContent = 'Loading…';
+    try {
+        const query = buildHistoryQuery();
+        const data = await fetchJSON(`/api/jobs/history?${query}`);
+        tableBody.innerHTML = renderHistoryRows(data.items);
+        renderPagination(data.total, data.page, data.limit);
+        if (data.total && data.items.length) {
+            const start = (data.page - 1) * data.limit + 1;
+            const end = start + data.items.length - 1;
+            countEl.textContent = `Showing ${start}-${end} of ${data.total}`;
+        } else if (data.total) {
+            countEl.textContent = `No rows on page ${data.page}.`;
+        } else {
+            countEl.textContent = 'No jobs to display';
+        }
+    } catch (error) {
+        tableBody.innerHTML = `<tr><td colspan="8" class="error">${escapeHtml(error.message || 'Failed to load history')}</td></tr>`;
+        paginationEl.innerHTML = '<span class="error">Failed to load pagination.</span>';
+        countEl.textContent = 'Error loading data';
+    }
+}
+
+if (filterForm) {
+    filterForm.addEventListener('change', () => {
+        historyState.page = 1;
+        loadHistory();
+    });
+    filterForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        historyState.page = 1;
+        loadHistory();
+    });
+}
+
+if (paginationEl) {
+    paginationEl.addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-page]');
+        if (!button || button.disabled) return;
+        const targetPage = Number(button.dataset.page);
+        if (!Number.isFinite(targetPage) || targetPage < 1) return;
+        historyState.page = targetPage;
+        loadHistory();
+    });
+}
+
+if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => loadHistory().catch(() => {}));
+}
+
+loadHistory();
+</script>
+{% endblock %}
