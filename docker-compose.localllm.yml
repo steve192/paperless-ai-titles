@@ -1,0 +1,95 @@
+services:
+  localai-api:
+    image: quay.io/go-skynet/local-ai:latest
+    # For GPU support, use one of:
+    # image: localai/localai:latest-aio-gpu-nvidia-cuda-12
+    # image: localai/localai:latest-aio-gpu-nvidia-cuda-11
+    # image: localai/localai:latest-aio-gpu-hipblas
+    # image: localai/localai:latest-aio-gpu-intel
+    ports:
+      - 8001:8080
+    environment:
+      - DEBUG=true
+      - API_KEY=${API_KEY:-your-api-key-here}
+    volumes:
+      - llm_data:/models:cached
+    # For NVIDIA GPUs, uncomment:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  app:
+    build: .
+    command: ["uvicorn", "paperless_ai_titles.fastapi_app:app", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      - APP_HOST=0.0.0.0
+      - APP_PORT=8080
+      - SQLITE_PATH=/data/paperless_ai_titles.db
+      - REDIS_URL=redis://redis:6379/0
+      - PAPERLESS_BASE_URL=${PAPERLESS_BASE_URL}
+      - PAPERLESS_API_TOKEN=${PAPERLESS_API_TOKEN}
+      - PAPERLESS_SKIP_TAG=${PAPERLESS_SKIP_TAG:-skip-ai-title}
+      - PAPERLESS_REQUIRE_TAG=${PAPERLESS_REQUIRE_TAG}
+      - PAPERLESS_ORIGINAL_TITLE_FIELD=${PAPERLESS_ORIGINAL_TITLE_FIELD:-original_title}
+      - PAPERLESS_HOOK_TOKEN=${PAPERLESS_HOOK_TOKEN}
+      - LLM_BASE_URL=localai-api:8080/v1/chat/completions
+      - LLM_API_TOKEN=${LLM_API_TOKEN:-api-key-here}
+      - LLM_MODEL_NAME=${LLM_MODEL_NAME:-llama-3.2-3b-instruct:q4_k_m}
+      - LLM_CONFIDENCE_THRESHOLD=${LLM_CONFIDENCE_THRESHOLD:-0.6}
+      - LLM_REQUEST_TIMEOUT=${LLM_REQUEST_TIMEOUT:-300}
+      - AUTO_APPLY_TITLES=${AUTO_APPLY_TITLES:-true}
+      - SCANNER_ENABLED=${SCANNER_ENABLED:-true}
+      - SCAN_INTERVAL_SECONDS=${SCAN_INTERVAL_SECONDS:-300}
+      - SCANNER_PAGE_SIZE=${SCANNER_PAGE_SIZE:-50}
+      - MAX_JOBS_PER_SCAN=${MAX_JOBS_PER_SCAN:-50}
+      - QUEUE_NAME=${QUEUE_NAME:-documents}
+      - JOB_RETRY_DELAYS=${JOB_RETRY_DELAYS:-[30,90,300]}
+    ports:
+      - "8080:8080"
+    volumes:
+      - app_data:/data
+    depends_on:
+      - redis
+
+  worker:
+    build: .
+    command: ["python", "-m", "paperless_ai_titles.rq_worker_runner"]
+    environment:
+      - SQLITE_PATH=/data/paperless_ai_titles.db
+      - REDIS_URL=redis://redis:6379/0
+      - PAPERLESS_BASE_URL=${PAPERLESS_BASE_URL}
+      - PAPERLESS_API_TOKEN=${PAPERLESS_API_TOKEN}
+      - PAPERLESS_SKIP_TAG=${PAPERLESS_SKIP_TAG:-skip-ai-title}
+      - PAPERLESS_REQUIRE_TAG=${PAPERLESS_REQUIRE_TAG}
+      - PAPERLESS_ORIGINAL_TITLE_FIELD=${PAPERLESS_ORIGINAL_TITLE_FIELD:-original_title}
+      - PAPERLESS_HOOK_TOKEN=${PAPERLESS_HOOK_TOKEN}
+      - LLM_BASE_URL=localai-api:8080/v1/chat/completions
+      - LLM_API_TOKEN=${LLM_API_TOKEN:-api-key-here}
+      - LLM_MODEL_NAME=${LLM_MODEL_NAME:-llama-3.2-3b-instruct:q4_k_m}
+      - LLM_CONFIDENCE_THRESHOLD=${LLM_CONFIDENCE_THRESHOLD:-0.6}
+      - LLM_REQUEST_TIMEOUT=${LLM_REQUEST_TIMEOUT:-300}
+      - AUTO_APPLY_TITLES=${AUTO_APPLY_TITLES:-true}
+      - SCANNER_ENABLED=${SCANNER_ENABLED:-true}
+      - SCAN_INTERVAL_SECONDS=${SCAN_INTERVAL_SECONDS:-300}
+      - SCANNER_PAGE_SIZE=${SCANNER_PAGE_SIZE:-50}
+      - MAX_JOBS_PER_SCAN=${MAX_JOBS_PER_SCAN:-50}
+      - QUEUE_NAME=${QUEUE_NAME:-documents}
+      - JOB_RETRY_DELAYS=${JOB_RETRY_DELAYS:-[30,90,300]}
+    volumes:
+      - app_data:/data
+    depends_on:
+      - redis
+
+volumes:
+  llm_data:
+  redis_data:

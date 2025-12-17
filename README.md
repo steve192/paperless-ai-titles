@@ -17,14 +17,16 @@ Sidecar service that watches a Paperless-NGX instance, generates better document
 - A Paperless-NGX instance with an API token that can read/write documents
 - An OpenAI-compatible endpoint for title generation
 
-### Where do I get an LLM from?
-- Use OpenAI or any compatible API endpoint.
-- To run locally, try `localai/localai:latest-aio-cpu`.
-  - Use `docker-compose.localllm.yml` for a preconfigured setup.
+
+### I don't have a LLM / I don't want to send my documents to the internet
+- You can use any OpenAI compatible API endpoint.
+- To run locally, you could for example use `quay.io/go-skynet/local-ai:latest`.
+  - Use `docker-compose.localllm.yml` for a preconfigured setup
+  - Follow the steps of _Environment Variables_ and _Run the Stack_ sections below
   - Visit [http://localhost:8001](http://localhost:8001) to manage LocalAI.
-  - Download a suitable model (for example `llama-3.2-3b-instruct:q8_0`, ~3.5 GB RAM, CPU-only).
-  - (Optional) Set an API token.
-  - Update `.env` with the model name and token (if set).
+  - Download a suitable model (for example `llama-3.2-3b-instruct:q4_k_m`, ~4 GB RAM, CPU-only).
+  - Update `.env` with the model name and token.
+  - Continue onboarding in the UI (http://localhost:8080)
 
 ### Environment Variables
 Copy `.env.example` to `.env` and tweak the defaults:
@@ -44,13 +46,14 @@ Environment variables provide safe defaults and pre-populate the UI for later tw
 ### Run the stack
 
 ```bash
-docker compose up --build
+docker compose up
+```
+or
+```bash
+docker compose -f docker-compose.localllm.yml up
 ```
 
-Services:
-- `app`: FastAPI server + UI at `http://localhost:8080`
-- `worker`: RQ worker consuming queued document jobs
-- `redis`: Queue backend
+Then access the app under http://localhost:8080
 
 ### Setup & Paperless integration
 1. Open `http://localhost:8080` after the stack starts. The setup screen loads your `.env` defaults, lets you test Paperless + LLM connections, lists recent documents, and offers a dry-run to inspect proposed titles.
