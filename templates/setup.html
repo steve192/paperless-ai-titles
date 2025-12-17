@@ -275,7 +275,8 @@ async function previewDocuments() {
         body: JSON.stringify(payload)
     });
     if (!res.ok) {
-        setStatus('Failed to contact Paperless. Check credentials.');
+        const message = await extractErrorMessage(res, 'Failed to contact Paperless. Check credentials.');
+        setStatus(message);
         return;
     }
     const data = await res.json();
@@ -520,8 +521,9 @@ async function dryRun(documentId) {
             body: JSON.stringify(payload)
         });
         if (!res.ok) {
-            setStatus('Dry run failed. Check logs.');
-            showDryRunError('Dry run failed. Check logs.');
+            const message = await extractErrorMessage(res, 'Dry run failed. Check logs.');
+            setStatus(message);
+            showDryRunError(message);
             return;
         }
         const data = await res.json();
@@ -543,7 +545,8 @@ async function completeSetup() {
         body: JSON.stringify(payload)
     });
     if (!res.ok) {
-        setStatus('Unable to finalize setup.');
+        const message = await extractErrorMessage(res, 'Unable to finalize setup.');
+        setStatus(message);
         return;
     }
     setStatus('Setup complete! Redirecting to dashboard…');
@@ -552,6 +555,36 @@ async function completeSetup() {
 
 function setStatus(message) {
     document.getElementById('setup-status').textContent = message;
+}
+
+async function extractErrorMessage(response, fallback) {
+    try {
+        const payload = await response.json();
+        const detail = (payload && Object.prototype.hasOwnProperty.call(payload, 'detail'))
+            ? payload.detail
+            : payload;
+        if (!detail || typeof detail !== 'object') {
+            return fallback;
+        }
+        const parts = [];
+        if (detail.service) {
+            parts.push(`[${detail.service}]`);
+        }
+        if (detail.status_code) {
+            parts.push(`HTTP ${detail.status_code}`);
+        }
+        if (detail.url) {
+            parts.push(detail.url);
+        }
+        if (detail.message) {
+            parts.push('-', detail.message);
+        }
+        const message = parts.join(' ').trim();
+        return message || fallback;
+    } catch (error) {
+        console.warn('Unable to parse error response', error);
+        return fallback;
+    }
 }
 
 resetDryRunPanel();

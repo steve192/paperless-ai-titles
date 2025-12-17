@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 from paperless_ai_titles.core.database import db_session
 from paperless_ai_titles.core.models import DocumentRecord, DocumentStatus, ProcessingJob, ProcessingJobStatus
+from paperless_ai_titles.services.onboarding import OnboardingConnectionError
 
 
 @pytest.fixture
@@ -78,3 +79,51 @@ def test_approvals_endpoint_formats_pending_records(api_client):
     assert item["document_id"] == 10
     assert item["suggested_title"] == "AI Suggestion"
     assert item["reason"].startswith("low confidence")
+
+
+def test_setup_preview_propagates_connection_error_details(api_client, monkeypatch):
+    from paperless_ai_titles.services import onboarding as onboarding_module
+
+    async def fake_preview(self, overrides, page_size=10):  # noqa: ARG002
+        raise OnboardingConnectionError(
+            "paperless",
+            url="https://paperless.example.com/api/documents/",
+            status_code=401,
+            message="Unauthorized",
+        )
+
+    monkeypatch.setattr(onboarding_module.OnboardingService, "preview_documents", fake_preview)
+
+    response = api_client.post("/api/setup/preview-documents", json={"settings": {}})
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail["service"] == "paperless"
+    assert detail["status_code"] == 401
+    assert "paperless.example.com" in detail["url"]
+    assert "Unauthorized" in detail["message"]
+
+
+def test_setup_complete_requires_successful_connections(api_client, monkeypatch):
+    from paperless_ai_titles.services import onboarding as onboarding_module
+
+    async def failing_validate(self, overrides):  # noqa: ARG002
+        raise OnboardingConnectionError(
+            "llm",
+            url="http://llm.local/v1/chat/completions",
+            status_code=500,
+            message="Internal error",
+        )
+
+    async def guard_complete(self, overrides):  # pragma: no cover - should not run
+        raise AssertionError("complete() should not be called when validation fails")
+
+    monkeypatch.setattr(onboarding_module.OnboardingService, "validate_connections", failing_validate)
+    monkeypatch.setattr(onboarding_module.OnboardingService, "complete", guard_complete)
+
+    response = api_client.post("/api/setup/complete", json={"settings": {}})
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail["service"] == "llm"
+    assert detail["status_code"] == 500
+    assert "llm.local" in detail["url"]
+    assert "Internal error" in detail["message"]

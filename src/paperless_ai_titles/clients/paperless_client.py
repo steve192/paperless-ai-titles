@@ -62,7 +62,7 @@ class PaperlessClient:
         return await self._list_collection("/api/tags/", page_size=page_size)
 
     async def create_tag(self, name: str, color: Optional[str] = None) -> dict[str, Any]:
-        payload: dict[str, Any] = {"name": name.strip(), "match": ""}  # blank match avoids auto assignment
+        payload: dict[str, Any] = {"name": name.strip(), "match": "", "matching_algorithm": 0}  
         if color:
             payload["color"] = color
         response = await self._request("POST", "/api/tags/", json=payload)

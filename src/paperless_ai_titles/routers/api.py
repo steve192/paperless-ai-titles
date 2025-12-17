@@ -35,7 +35,7 @@ from ..api_schemas import (
     TagOption,
 )
 from ..services.jobs import enqueue_document
-from ..services.onboarding import OnboardingService
+from ..services.onboarding import OnboardingConnectionError, OnboardingService
 from ..services.processing import ProcessingService
 from ..services.scanner import get_scanner_service
 from ..services.settings import CONFIGURABLE_KEYS, SettingsService
@@ -62,6 +62,18 @@ def _parse_timestamp(raw: str | None) -> datetime:
         return datetime.fromisoformat(cleaned)
     except ValueError:
         return datetime.utcnow()
+
+
+def _onboarding_error_to_http(exc: OnboardingConnectionError) -> HTTPException:
+    detail = {
+        "service": exc.service,
+        "status_code": exc.status_code,
+        "url": exc.url,
+        "message": exc.message,
+    }
+    # Use 502 Bad Gateway to signal an upstream dependency failure during
+    # onboarding, while surfacing rich context for the UI.
+    raise HTTPException(status_code=502, detail=detail)
 
 
 @router.get("/settings", response_model=list[SettingRead])
@@ -247,7 +259,10 @@ def setup_state() -> SetupState:
 
 @router.post("/setup/preview-documents")
 async def setup_preview(payload: SetupSettingsPayload) -> dict:
-    return await OnboardingService().preview_documents(payload.settings)
+    try:
+        return await OnboardingService().preview_documents(payload.settings)
+    except OnboardingConnectionError as exc:
+        raise _onboarding_error_to_http(exc)
 
 
 @router.post("/setup/metadata", response_model=SetupMetadata)
@@ -258,13 +273,22 @@ async def setup_metadata(payload: SetupSettingsPayload) -> SetupMetadata:
 
 @router.post("/setup/dry-run", response_model=DryRunResult)
 async def setup_dry_run(payload: DryRunRequest) -> DryRunResult:
-    result = await OnboardingService().dry_run(payload.document_id, payload.settings)
+    try:
+        result = await OnboardingService().dry_run(payload.document_id, payload.settings)
+    except OnboardingConnectionError as exc:
+        raise _onboarding_error_to_http(exc)
     return DryRunResult(**result)
 
 
 @router.post("/setup/complete")
 async def setup_complete(payload: SetupSettingsPayload) -> dict:
     service = OnboardingService()
+    # Require successful connectivity to both Paperless and the LLM before
+    # enabling automation.
+    try:
+        await service.validate_connections(payload.settings)
+    except OnboardingConnectionError as exc:
+        raise _onboarding_error_to_http(exc)
     service.complete(payload.settings)
     await scanner_service.start()
     return {"status": "ok"}
