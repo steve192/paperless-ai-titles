@@ -70,6 +70,31 @@ def enqueue_document(
         doc.last_error = None
         session.add(doc)
 
+        # If we just created a new job while there were other active jobs
+        # for this document (e.g. via force reprocess), mark the previous
+        # active jobs as skipped so that only the newest job remains
+        # active in history.
+        previous_active_jobs = (
+            session.query(ProcessingJob)
+            .filter(
+                ProcessingJob.document_id == document_id,
+                ProcessingJob.status.in_(ACTIVE_STATUSES),
+                ProcessingJob.id != job.id,
+            )
+            .all()
+        )
+        for previous in previous_active_jobs:
+            logger.debug(
+                "Marking previous job %s for document %s as skipped in favor of job %s",
+                previous.id,
+                document_id,
+                job.id,
+            )
+            previous.status = ProcessingJobStatus.SKIPPED.value
+            previous.reason = f"superseded by job {job.id}"
+            previous.completed_at = datetime.utcnow()
+            session.add(previous)
+
         retry = None
         if settings.job_retry_delays:
             retry = Retry(max=len(settings.job_retry_delays), interval=settings.job_retry_delays)

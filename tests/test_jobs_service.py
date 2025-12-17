@@ -53,13 +53,13 @@ def test_enqueue_document_force_creates_new_job(monkeypatch):
     fake_queue = DummyQueue()
     monkeypatch.setattr(jobs, "get_queue", lambda: fake_queue)
     with db_session() as session:
-        session.add(
-            ProcessingJob(
-                document_id=77,
-                status=ProcessingJobStatus.PENDING.value,
-                source="scanner",
-            )
+        existing = ProcessingJob(
+            document_id=77,
+            status=ProcessingJobStatus.PENDING.value,
+            source="scanner",
         )
+        session.add(existing)
+        session.flush()
 
     job, created = jobs.enqueue_document(77, source="scanner", reason="retry", force=True)
 
@@ -69,3 +69,15 @@ def test_enqueue_document_force_creates_new_job(monkeypatch):
     with db_session() as session:
         record = session.get(DocumentRecord, 77)
         assert record.status == ProcessingJobStatus.QUEUED.value
+        jobs_for_doc = (
+            session.query(ProcessingJob)
+            .filter(ProcessingJob.document_id == 77)
+            .order_by(ProcessingJob.id.asc())
+            .all()
+        )
+        assert len(jobs_for_doc) == 2
+        old_job, new_job = jobs_for_doc
+        assert new_job.id == job.id
+        assert old_job.status == ProcessingJobStatus.SKIPPED.value
+        assert "superseded by job" in (old_job.reason or "")
+        assert str(job.id) in (old_job.reason or "")
