@@ -1,24 +1,48 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
+  "extends": [
+    "config:recommended",
+    ":semanticCommits"
+  ],
   "timezone": "UTC",
   "dependencyDashboard": true,
   "rangeStrategy": "bump",
+  "stabilityDays": 7,
+  "platformAutomerge": true,
+  "automergeType": "branch",
+  "labels": ["dependencies"],
   "packageRules": [
     {
+      "description": "Safely automerge patch and digest updates",
+      "matchUpdateTypes": ["patch", "digest"],
+      "automerge": true
+    },
+    {
+      "description": "Python runtime/dev dependencies from pyproject (PEP 621)",
+      "matchManagers": ["pep621"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "python-dependencies",
+      "automerge": true
+    },
+    {
+      "description": "Docker base images (runtime)",
       "matchManagers": ["dockerfile", "docker-compose"],
       "matchUpdateTypes": ["minor", "patch"],
-      "groupName": "docker-base-images"
+      "groupName": "docker-base-images",
+      "automerge": true
     },
     {
-      "matchManagers": ["pip_requirements", "pip_setup"],
+      "description": "GitHub Actions workflow dependencies",
+      "matchManagers": ["github-actions"],
       "matchUpdateTypes": ["minor", "patch"],
-      "groupName": "python-dependencies"
+      "groupName": "github-actions",
+      "automerge": true
     },
     {
-      "matchManagers": ["npm"],
-      "matchUpdateTypes": ["minor", "patch"],
-      "groupName": "npm-tooling"
+      "description": "Major updates stay manual and grouped",
+      "matchUpdateTypes": ["major"],
+      "groupName": "major-dependency-updates",
+      "schedule": ["before 4am on sunday"]
     }
   ]
 }
