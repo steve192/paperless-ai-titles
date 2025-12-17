@@ -7,34 +7,55 @@
   "timezone": "UTC",
   "dependencyDashboard": true,
   "rangeStrategy": "bump",
-  "stabilityDays": 7,
+  "minimumReleaseAge": "7 days",
   "platformAutomerge": true,
   "automergeType": "branch",
-  "labels": ["dependencies"],
+  "labels": [
+    "dependencies"
+  ],
   "packageRules": [
     {
       "description": "Safely automerge patch and digest updates",
-      "matchUpdateTypes": ["patch", "digest"],
+      "matchUpdateTypes": [
+        "patch",
+        "digest"
+      ],
       "automerge": true
     },
     {
       "description": "Python runtime/dev dependencies from pyproject (PEP 621)",
-      "matchManagers": ["pep621"],
-      "matchUpdateTypes": ["minor", "patch"],
+      "matchManagers": [
+        "pep621"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
       "groupName": "python-dependencies",
       "automerge": true
     },
     {
       "description": "Docker base images (runtime)",
-      "matchManagers": ["dockerfile", "docker-compose"],
-      "matchUpdateTypes": ["minor", "patch"],
+      "matchManagers": [
+        "dockerfile",
+        "docker-compose"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
       "groupName": "docker-base-images",
       "automerge": true
     },
     {
       "description": "GitHub Actions workflow dependencies",
-      "matchManagers": ["github-actions"],
-      "matchUpdateTypes": ["minor", "patch"],
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
       "groupName": "github-actions",
       "automerge": true
     }
