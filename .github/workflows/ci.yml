@@ -2,9 +2,12 @@ name: ci
 
 on:
   push:
-    branches: ["main"]
+    # Run CI on all branches
+    branches:
+      - "**"
     # Build on semver tags as well
-    tags: ["v*.*.*"]
+    tags:
+      - "v*.*.*"
   release:
     types: [published]
   pull_request:
