@@ -424,3 +424,7 @@ def _set_job_running(job_id: int) -> None:
             job.status = ProcessingJobStatus.RUNNING.value
             job.attempt_count = (job.attempt_count or 0) + 1
             session.add(job)
+
+            record = session.get(DocumentRecord, job.document_id) or DocumentRecord(document_id=job.document_id)
+            record.status = DocumentStatus.RUNNING.value
+            session.add(record)
