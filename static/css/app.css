@@ -103,7 +103,7 @@ a {
 }
 
 .scroll-panel {
-    max-height: 320px;
+    max-height: 1024px;
     overflow-y: auto;
 }
 
