@@ -28,9 +28,9 @@ def test_health_endpoint(api_client):
 
 def test_queue_metrics_counts_statuses(api_client):
     with db_session() as session:
-        session.add(DocumentRecord(document_id=1, status=DocumentStatus.QUEUED.value))
-        session.add(DocumentRecord(document_id=2, status=DocumentStatus.RUNNING.value))
-        session.add(DocumentRecord(document_id=3, status=DocumentStatus.FAILED.value))
+        session.add(ProcessingJob(document_id=1, status=ProcessingJobStatus.QUEUED.value))
+        session.add(ProcessingJob(document_id=2, status=ProcessingJobStatus.RUNNING.value))
+        session.add(ProcessingJob(document_id=3, status=ProcessingJobStatus.FAILED.value))
     response = api_client.get("/api/queue/metrics")
     body = response.json()
     assert body["queued"] == 1

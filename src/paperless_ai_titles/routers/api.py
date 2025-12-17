@@ -222,22 +222,28 @@ def paperless_hook(payload: HookPayload) -> EnqueueResponse:
 def queue_metrics() -> QueueMetrics:
     with db_session() as session:
         counts = session.execute(
-            select(DocumentRecord.status, func.count()).group_by(DocumentRecord.status)
+            select(ProcessingJob.status, func.count()).group_by(ProcessingJob.status)
         ).all()
         count_map = {status: total for status, total in counts}
         start_of_day = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         completed_today = session.execute(
             select(func.count()).where(
-                DocumentRecord.status == DocumentStatus.COMPLETED.value,
-                DocumentRecord.processed_at >= start_of_day,
+                ProcessingJob.status.in_(
+                    [
+                        ProcessingJobStatus.COMPLETED.value,
+                        ProcessingJobStatus.SKIPPED.value,
+                        ProcessingJobStatus.REJECTED.value,
+                    ]
+                ),
+                ProcessingJob.completed_at >= start_of_day,
             )
         ).scalar_one()
         return QueueMetrics(
-            queued=count_map.get(DocumentStatus.QUEUED.value, 0),
-            running=count_map.get(DocumentStatus.RUNNING.value, 0),
-            failed=count_map.get(DocumentStatus.FAILED.value, 0),
+            queued=count_map.get(ProcessingJobStatus.QUEUED.value, 0),
+            running=count_map.get(ProcessingJobStatus.RUNNING.value, 0),
+            failed=count_map.get(ProcessingJobStatus.FAILED.value, 0),
             completed_today=completed_today,
-            awaiting_approval=count_map.get(DocumentStatus.AWAITING_APPROVAL.value, 0),
+            awaiting_approval=count_map.get(ProcessingJobStatus.AWAITING_APPROVAL.value, 0),
         )
 
 
