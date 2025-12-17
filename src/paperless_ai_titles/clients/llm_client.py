@@ -72,10 +72,11 @@ class TitleLLMClient:
                 },
             ],
         }
-        raw = await self._post(payload)
-        content = self._extract_content(raw)
-        parsed = self._parse_json_content(content)
-        title = (parsed.get("title") if isinstance(parsed, dict) else content).strip()
+        raw, parsed = await self._post_with_json_retry(payload, purpose="propose_title")
+        title_value = parsed.get("title") if isinstance(parsed, dict) else None
+        if not isinstance(title_value, str) or not title_value.strip():
+            raise ValueError("LLM response missing 'title' field")
+        title = title_value.strip()
         confidence = self._normalize_confidence(parsed.get("confidence")) if isinstance(parsed, dict) else None
         logger.debug(
             "LLM propose_title completed (len=%s) => '%s' confidence=%s",
@@ -106,10 +107,8 @@ class TitleLLMClient:
                 },
             ],
         }
-        raw = await self._post(payload)
-        content = self._extract_content(raw)
-        parsed = self._parse_json_content(content)
-        decision_text = (parsed.get("decision") if isinstance(parsed, dict) else content).strip()
+        raw, parsed = await self._post_with_json_retry(payload, purpose="evaluate_title")
+        decision_text = (parsed.get("decision") if isinstance(parsed, dict) else "").strip()
         acceptable_flag = parsed.get("acceptable") if isinstance(parsed, dict) else None
         decision = decision_text.upper()
         acceptable = acceptable_flag if isinstance(acceptable_flag, bool) else decision.startswith("GOOD")
@@ -134,6 +133,37 @@ class TitleLLMClient:
     def _truncate_text(self, text: str) -> str:
         limit = max(1, int(self.settings.llm_prompt_char_limit))
         return text[:limit]
+
+    async def _post_with_json_retry(
+        self,
+        payload: Dict[str, Any],
+        *,
+        purpose: str,
+        max_attempts: int = 2,
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        """Post to the LLM and ensure a JSON object response, retrying once if needed.
+
+        Never returns a non-JSON response; instead raises ValueError after retries.
+        """
+        last_content: str | None = None
+        attempts = max(1, int(max_attempts))
+        for attempt in range(1, attempts + 1):
+            raw = await self._post(payload)
+            content = self._extract_content(raw)
+            last_content = content
+            parsed = self._parse_json_content(content)
+            if isinstance(parsed, dict):
+                return raw, parsed
+            logger.warning(
+                "LLM %s returned non-JSON content on attempt %s/%s: %r",
+                purpose,
+                attempt,
+                attempts,
+                content[:200],
+            )
+        raise ValueError(
+            f"LLM returned non-JSON response for {purpose} after {attempts} attempts: {last_content!r}"
+        )
 
     @staticmethod
     def _parse_json_content(content: str) -> Dict[str, Any] | None:
