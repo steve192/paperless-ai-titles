@@ -13,7 +13,7 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "pydantic-settings",
-    "sqlalchemy>=2.0",
+    "sqlalchemy>=2.0.44",
     "alembic",
     "httpx",
     "redis",
