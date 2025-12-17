@@ -72,6 +72,9 @@
 </section>
 
 <script>
+const PAPERLESS_BASE_URL = '{{ paperless_base_url }}';
+const PAPERLESS_DOC_URL_PREFIX = PAPERLESS_BASE_URL ? PAPERLESS_BASE_URL.replace(/\/+$/, '') + '/documents/' : '';
+
 const activityEl = document.getElementById('activity');
 const queueEl = document.getElementById('queue-metrics');
 const scannerEl = document.getElementById('scanner-status');
@@ -136,10 +139,12 @@ function renderPrimaryApproval(item) {
         <article class="approval-hero-card">
             <div class="hero-head">
                 <div>
-                    <p class="doc-label">Document #${item.document_id}</p>
+                    <p class="doc-label">
+                        <a href="${PAPERLESS_DOC_URL_PREFIX}${item.document_id}/" target="_blank" rel="noopener">Document #${item.document_id}</a>
+                    </p>
                     <p class="muted small">${escapeHtml(item.reason)} · ${formatDate(item.created_at)}</p>
                 </div>
-                <span class="confidence-chip">Confidence ${confidence}</span>
+                 <span class="confidence-chip">Confidence ${confidence}</span>
             </div>
             <div class="hero-titles">
                 <div class="title-panel">
@@ -152,8 +157,7 @@ function renderPrimaryApproval(item) {
                 </div>
             </div>
             <div class="hero-meta">
-                <span class="info-chip">Doc #${item.document_id}</span>
-                <span class="info-chip">${confidence}</span>
+                <a class="info-chip" href="${PAPERLESS_DOC_URL_PREFIX}${item.document_id}/" target="_blank" rel="noopener">Doc #${item.document_id}</a>
                 <span class="muted small">${formatDate(item.created_at)}</span>
             </div>
             ${ocrExcerpt}
@@ -174,7 +178,7 @@ function renderApprovalList(state) {
         const isPrimary = state.items[0] && item.document_id === state.items[0].document_id;
         return `
             <tr class="${isPrimary ? 'current' : ''}">
-                <td>#${item.document_id}</td>
+                <td><a href="${PAPERLESS_DOC_URL_PREFIX}${item.document_id}/" target="_blank" rel="noopener">#${item.document_id}</a></td>
                 <td>${escapeHtml(item.existing_title || '—')}</td>
                 <td>${escapeHtml(item.suggested_title)}</td>
                 <td>${confidence}</td>

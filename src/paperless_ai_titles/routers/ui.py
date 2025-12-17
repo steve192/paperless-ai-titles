@@ -15,7 +15,15 @@ router = APIRouter(include_in_schema=False)
 async def dashboard(request: Request):
     if settings_service.needs_onboarding():
         return templates.TemplateResponse("setup.html", {"request": request})
-    return templates.TemplateResponse("index.html", {"request": request})
+    settings = settings_service.effective_settings()
+    paperless_base_url = str(settings.paperless_base_url).rstrip("/")
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "paperless_base_url": paperless_base_url,
+        },
+    )
 
 
 @router.get("/setup", response_class=HTMLResponse)

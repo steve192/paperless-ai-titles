@@ -422,12 +422,15 @@ fieldset legend {
     font-size: 0.9rem;
 }
 
+select > option {
+    background-color: rgb(7 13 24);
+}
+
 .history-filters select,
 .history-filters input {
     background: rgba(255,255,255,0.04);
     border: 1px solid rgba(255,255,255,0.15);
     border-radius: 0.65rem;
-    padding: 0.55rem 0.75rem;
     color: var(--ink);
     appearance: none;
     -webkit-appearance: none;
