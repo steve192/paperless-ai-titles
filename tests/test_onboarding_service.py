@@ -28,7 +28,7 @@ def test_wrap_http_error_extracts_url_and_status_code():
     assert "401" in wrapped.message
 
 
-async def test_validate_connections_calls_helpers(monkeypatch):
+def test_validate_connections_calls_helpers(monkeypatch):
     called = {"paperless": False, "llm": False}
 
     async def fake_validate_paperless(settings: Settings):  # noqa: ARG001
@@ -44,13 +44,13 @@ async def test_validate_connections_calls_helpers(monkeypatch):
     monkeypatch.setattr(onboarding_module, "_validate_llm", fake_validate_llm)
 
     service = OnboardingService()
-    await service.validate_connections({})
+    asyncio.run(service.validate_connections({}))
 
     assert called["paperless"] is True
     assert called["llm"] is True
 
 
-async def test_validate_connections_propagates_onboarding_error(monkeypatch):
+def test_validate_connections_propagates_onboarding_error(monkeypatch):
     async def fake_validate_paperless(settings: Settings):  # noqa: ARG001
         raise OnboardingConnectionError(
             "paperless",
@@ -65,7 +65,7 @@ async def test_validate_connections_propagates_onboarding_error(monkeypatch):
     service = OnboardingService()
 
     try:
-        await service.validate_connections({})
+        asyncio.run(service.validate_connections({}))
     except OnboardingConnectionError as exc:
         assert exc.service == "paperless"
         assert exc.status_code == 503
@@ -74,7 +74,7 @@ async def test_validate_connections_propagates_onboarding_error(monkeypatch):
         raise AssertionError("Expected OnboardingConnectionError to be raised")
 
 
-async def test_ping_paperless_wraps_http_errors(monkeypatch):
+def test_ping_paperless_wraps_http_errors(monkeypatch):
     """_ping_paperless should translate httpx errors into OnboardingConnectionError."""
 
     class DummyClient:
@@ -90,7 +90,7 @@ async def test_ping_paperless_wraps_http_errors(monkeypatch):
     monkeypatch.setattr(onboarding_module, "PaperlessClient", DummyClient)
 
     with pytest.raises(OnboardingConnectionError) as ctx:
-        await _ping_paperless(Settings())
+        asyncio.run(_ping_paperless(Settings()))
 
     err = ctx.value
     assert err.service == "paperless"
@@ -98,7 +98,7 @@ async def test_ping_paperless_wraps_http_errors(monkeypatch):
     assert "paperless.example.com" in (err.url or "")
 
 
-async def test_ping_llm_wraps_http_errors(monkeypatch):
+def test_ping_llm_wraps_http_errors(monkeypatch):
     """_ping_llm should translate httpx errors into OnboardingConnectionError."""
 
     class DummyLLM:
@@ -114,7 +114,7 @@ async def test_ping_llm_wraps_http_errors(monkeypatch):
     monkeypatch.setattr(onboarding_module, "TitleLLMClient", DummyLLM)
 
     with pytest.raises(OnboardingConnectionError) as ctx:
-        await _ping_llm(Settings())
+        asyncio.run(_ping_llm(Settings()))
 
     err = ctx.value
     assert err.service == "llm"
