@@ -366,11 +366,14 @@ class ProcessingService:
     def mark_failure(self, job_id: int, document_id: int, error: str) -> None:
         logger.debug("Marking job %s failed for document %s error=%s", job_id, document_id, error)
         with db_session() as session:
+            summary = (error or "").strip().splitlines()[0] or "error"
+            if len(summary) > 240:
+                summary = summary[:237] + "..."
             job = session.get(ProcessingJob, job_id)
             if job:
                 job.status = ProcessingJobStatus.FAILED.value
                 job.last_error = error
-                job.reason = "error"
+                job.reason = summary
                 session.add(job)
             record = session.get(DocumentRecord, document_id) or DocumentRecord(document_id=document_id)
             record.status = DocumentStatus.FAILED.value
