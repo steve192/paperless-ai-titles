@@ -5,9 +5,6 @@
         <p class="eyebrow">Processing archive</p>
         <h2>Job history</h2>
     </div>
-    <div class="hero-actions">
-        <button id="history-refresh" class="secondary" type="button">Refresh results</button>
-    </div>
 </section>
 
 <section class="history-panel">
@@ -43,7 +40,7 @@
             <select id="history-limit" name="limit">
                 <option value="25">25 rows</option>
                 <option value="50">50 rows</option>
-                <option value="100">100 rows</option>
+                <option value="100" selected>100 rows</option>
             </select>
         </label>
     </form>
@@ -53,6 +50,9 @@
             <div>
                 <h3>Job history</h3>
                 <p class="hint" id="history-count">Loading…</p>
+            </div>
+            <div class="history-actions">
+                <button id="history-refresh" class="secondary" type="button">Refresh results</button>
             </div>
         </header>
         <div class="history-table-wrapper scroll-panel" id="history-table-wrapper">
@@ -94,7 +94,7 @@ const limitSelect = document.getElementById('history-limit');
 
 const historyState = {
     page: 1,
-    limit: Number(limitSelect?.value) || 25,
+    limit: Number(limitSelect?.value) || 100,
     status: '',
     source: '',
     documentId: '',
