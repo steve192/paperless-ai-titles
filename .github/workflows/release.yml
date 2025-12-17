@@ -5,6 +5,8 @@ on:
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 jobs:
   release:
@@ -27,4 +29,9 @@ jobs:
           semantic_version: 23
           branches: main
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Use a personal access token (PAT) so semantic-release
+          # can access issues/PRs and create tags/releases that
+          # are allowed to trigger other workflows.
+          # Ensure `GH_TOKEN` is configured in repo/org secrets
+          # with `repo` + `workflow` scopes.
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
