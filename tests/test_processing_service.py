@@ -9,6 +9,7 @@ from paperless_ai_titles.core.models import (
     ProcessingJob,
     ProcessingJobStatus,
 )
+from paperless_ai_titles.services import processing as processing_module
 from paperless_ai_titles.services.processing import ProcessingService
 
 
@@ -129,6 +130,35 @@ async def test_approve_pending_applies_stored_plan():
         assert record.ai_title == "Approved"
         job = session.get(ProcessingJob, job_id)
         assert job.status == ProcessingJobStatus.COMPLETED.value
+
+
+def test_run_processing_job_marks_failure(monkeypatch):
+    original_service_cls = processing_module.ProcessingService
+
+    class ExplodingProcessingService:
+        def __init__(self):
+            pass
+
+        async def run_job(self, job_id: int, document_id: int):
+            raise RuntimeError("Boom from worker")
+
+        def mark_failure(self, job_id: int, document_id: int, error: str):
+            return original_service_cls.mark_failure(self, job_id, document_id, error)
+
+    monkeypatch.setattr(processing_module, "ProcessingService", ExplodingProcessingService)
+
+    document_id = 5
+    job_id = _create_job(document_id)
+
+    with pytest.raises(RuntimeError):
+        processing_module.run_processing_job(job_id, document_id)
+
+    with db_session() as session:
+        job = session.get(ProcessingJob, job_id)
+        assert job.status == ProcessingJobStatus.FAILED.value
+        assert job.last_error and "Boom from worker" in job.last_error
+        record = session.get(DocumentRecord, document_id)
+        assert record.status == DocumentStatus.FAILED.value
 
 
 def _create_pending_record(document_id: int, job_id: int) -> None:

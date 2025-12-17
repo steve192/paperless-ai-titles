@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 import httpx
 
+from ..clients.paperless_client import PaperlessDocument
 from ..core.config import Settings
 from ..services.settings import SettingsService
 
@@ -39,17 +40,19 @@ class TitleLLMClient:
             response.raise_for_status()
             return response.json()
 
-    async def propose_title(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> TitleSuggestion:
-        metadata = metadata or {}
+    async def propose_title(self, text: str, metadata: Optional[PaperlessDocument] = None) -> TitleSuggestion:
+        metadata = metadata or cast(PaperlessDocument, {})
         context_lines: list[str] = []
-        correspondent = metadata.get("correspondent") or {}
-        if correspondent:
-            context_lines.append(f"Correspondent: {correspondent.get('name')}")
-        doc_type = metadata.get("document_type") or {}
-        if doc_type:
-            context_lines.append(f"Document type: {doc_type.get('name')}")
-        if metadata.get("created"):
-            context_lines.append(f"Date: {metadata['created']}")
+        # TODO: Let paperless client fetch strings instead of ids
+        correspondent_id = metadata.get("correspondent")
+        if isinstance(correspondent_id, int):
+            context_lines.append(f"Correspondent ID: {correspondent_id}")
+        doc_type_id = metadata.get("document_type")
+        if isinstance(doc_type_id, int):
+            context_lines.append(f"Document type ID: {doc_type_id}")
+        created_value = metadata.get("created")
+        if created_value:
+            context_lines.append(f"Date: {created_value}")
         context = "\n".join(context_lines)
         snippet = self._truncate_text(text)
         instructions = (

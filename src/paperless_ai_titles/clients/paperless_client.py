@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TypedDict
 
 import httpx
 
@@ -10,6 +10,21 @@ from ..services.settings import SettingsService
 
 DEFAULT_TIMEOUT = httpx.Timeout(30.0)
 logger = logging.getLogger(__name__)
+
+
+class PaperlessDocument(TypedDict, total=False):
+    id: int
+    correspondent: int | None
+    document_type: int | None
+    storage_path: int | None
+    title: str | None
+    content: str | None
+    tags: list[Any]
+    created: str | None
+    created_date: str | None
+    modified: str | None
+    added: str | None
+    custom_fields: list[Any] | dict[str, Any]
 
 
 class PaperlessClient:
@@ -49,7 +64,7 @@ class PaperlessClient:
             )
             return response
 
-    async def fetch_document(self, document_id: int, *, expand: Optional[str] = None) -> dict[str, Any]:
+    async def fetch_document(self, document_id: int, *, expand: Optional[str] = None) -> PaperlessDocument:
         params = {"expand": expand} if expand else None
         response = await self._request("GET", f"/api/documents/{document_id}/", params=params)
         return response.json()

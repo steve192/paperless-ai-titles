@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from ..clients.llm_client import TitleEvaluation, TitleLLMClient, TitleSuggestion
-from ..clients.paperless_client import PaperlessClient
+from ..clients.paperless_client import PaperlessClient, PaperlessDocument
 from ..core.database import db_session
 from ..core.models import (
     DocumentRecord,
@@ -30,7 +30,7 @@ class ProcessingPlan:
     new_title: Optional[str]
     suggestion: Optional[TitleSuggestion]
     evaluation: Optional[TitleEvaluation]
-    document_payload: dict[str, Any]
+    document_payload: PaperlessDocument
     ocr_text: str
 
 
@@ -157,7 +157,12 @@ class ProcessingService:
             logger.debug("Applying plan automatically for job %s", job_id)
             await self._apply_plan(job_id, plan)
         else:
-            if self.settings.auto_apply_titles and not confidence_ok and plan.suggestion and plan.suggestion.confidence is not None:
+            if (
+                self.settings.auto_apply_titles
+                and not confidence_ok
+                and plan.suggestion
+                and plan.suggestion.confidence is not None
+            ):
                 logger.debug(
                     "Suggestion confidence %.3f below threshold %.3f for document %s; routing to approval",
                     plan.suggestion.confidence,

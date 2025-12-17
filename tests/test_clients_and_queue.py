@@ -99,6 +99,76 @@ async def test_propose_title_raises_after_two_invalid_json_attempts():
 
 
 @pytest.mark.asyncio
+async def test_propose_title_includes_metadata_ids_when_available():
+    settings = Settings()
+    client = TitleLLMClient(settings=settings)
+
+    calls: list[dict] = []
+
+    async def fake_post(payload: dict):
+        calls.append(payload)
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"title": "Context rich", "confidence": 0.4}',
+                    }
+                }
+            ]
+        }
+
+    client._post = fake_post  # type: ignore[assignment]
+
+    metadata = {
+        "correspondent": 42,
+        "document_type": 7,
+        "created": "2024-01-01",
+    }
+
+    suggestion = await client.propose_title("Body of the document", metadata=metadata)
+
+    assert suggestion.title == "Context rich"
+    assert len(calls) == 1
+    user_content = calls[0]["messages"][1]["content"]
+    assert "Correspondent ID: 42" in user_content
+    assert "Document type ID: 7" in user_content
+    assert "Date: 2024-01-01" in user_content
+
+
+@pytest.mark.asyncio
+async def test_propose_title_handles_missing_metadata_ids():
+    settings = Settings()
+    client = TitleLLMClient(settings=settings)
+
+    calls: list[dict] = []
+
+    async def fake_post(payload: dict):
+        calls.append(payload)
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"title": "ID only metadata", "confidence": 0.3}',
+                    }
+                }
+            ]
+        }
+
+    client._post = fake_post  # type: ignore[assignment]
+
+    metadata = {"document_type": None, "correspondent": None}
+
+    suggestion = await client.propose_title("Doc body content", metadata=metadata)
+
+    assert suggestion.title == "ID only metadata"
+    assert len(calls) == 1
+    user_content = calls[0]["messages"][1]["content"]
+    assert user_content.startswith("Document text snippet:")
+    assert "Correspondent ID:" not in user_content
+    assert "Document type ID:" not in user_content
+
+
+@pytest.mark.asyncio
 async def test_evaluate_title_uses_json_and_does_not_fall_back_to_raw_text():
     settings = Settings()
     client = TitleLLMClient(settings=settings)
