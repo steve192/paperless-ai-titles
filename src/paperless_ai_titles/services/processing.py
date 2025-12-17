@@ -225,6 +225,12 @@ class ProcessingService:
     def _store_pending_plan(self, job_id: int, plan: ProcessingPlan) -> None:
         assert plan.new_title, "plan missing new title"
         logger.debug("Persisting pending plan for document %s job %s", plan.document_id, job_id)
+        ocr_text = plan.ocr_text or ""
+        if len(ocr_text) <= 400:
+            ocr_excerpt = ocr_text.strip()
+        else:
+            start = max(0, (len(ocr_text) - 400) // 2)
+            ocr_excerpt = ocr_text[start : start + 400].strip()
         pending_snapshot = {
             "job_id": job_id,
             "new_title": plan.new_title,
@@ -233,7 +239,7 @@ class ProcessingService:
             "suggestion": plan.suggestion.raw if plan.suggestion else None,
             "evaluation": plan.evaluation.raw if plan.evaluation else None,
             "existing_title": plan.existing_title,
-            "ocr_excerpt": plan.ocr_text[:400].strip(),
+            "ocr_excerpt": ocr_excerpt,
             "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         }
         with db_session() as session:
