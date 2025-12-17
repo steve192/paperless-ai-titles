@@ -17,7 +17,6 @@ configure_logging(SETTINGS)
 
 
 def _wait_for_onboarding() -> None:
-    Base.metadata.create_all(bind=get_engine())
     while True:
         try:
             service = OnboardingService()
