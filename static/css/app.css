@@ -596,7 +596,7 @@ select > option {
     background: rgba(0,0,0,0.45);
     border-radius: 0.85rem;
     padding: 0.85rem;
-    max-height: 240px;
+    max-height: 1024px;
     overflow: auto;
 }
 

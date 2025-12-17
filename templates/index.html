@@ -82,6 +82,7 @@ const approvalsEl = document.getElementById('approvals');
 const refreshBtn = document.getElementById('refresh-btn');
 let approvalsState = { items: [], total: 0, page: 1, limit: 5 };
 let approvalsListExpanded = false;
+let approvalsDetailsState = {};
 
 async function fetchJSON(url, options) {
     const res = await fetch(url, options);
@@ -129,14 +130,17 @@ function renderPrimaryApproval(item) {
         ? `<div class="hero-ocr"><p class="muted small">${escapeHtml(item.ocr_excerpt)}</p></div>`
         : '';
     const detailBlocks = [];
+    const detailsState = approvalsDetailsState[item.document_id] || {};
     if (item.suggestion) {
-        detailBlocks.push(`<details><summary>Raw LLM suggestion</summary><pre>${escapeHtml(JSON.stringify(item.suggestion, null, 2))}</pre></details>`);
+        const openAttr = detailsState.suggestion ? ' open' : '';
+        detailBlocks.push(`<details data-kind="suggestion"${openAttr}><summary>Raw LLM suggestion</summary><pre>${escapeHtml(JSON.stringify(item.suggestion, null, 2))}</pre></details>`);
     }
     if (item.evaluation) {
-        detailBlocks.push(`<details><summary>LLM evaluation</summary><pre>${escapeHtml(JSON.stringify(item.evaluation, null, 2))}</pre></details>`);
+        const openAttr = detailsState.evaluation ? ' open' : '';
+        detailBlocks.push(`<details data-kind="evaluation"${openAttr}><summary>LLM evaluation</summary><pre>${escapeHtml(JSON.stringify(item.evaluation, null, 2))}</pre></details>`);
     }
     return `
-        <article class="approval-hero-card">
+        <article class="approval-hero-card" data-document-id="${item.document_id}">
             <div class="hero-head">
                 <div>
                     <p class="doc-label">
@@ -227,9 +231,16 @@ async function fetchApprovalsPage(page = approvalsState.page) {
 }
 
 async function refreshApprovalsOnly(page = approvalsState.page) {
+    const listContainer = approvalsEl.querySelector('.approval-list-container');
+    const scrollTop = listContainer ? listContainer.scrollTop : 0;
+    captureApprovalsDetailsState();
     const data = await fetchApprovalsPage(page);
     applyApprovalsData(data);
     approvalsEl.innerHTML = renderApprovals();
+    const newListContainer = approvalsEl.querySelector('.approval-list-container');
+    if (newListContainer && scrollTop > 0) {
+        newListContainer.scrollTop = scrollTop;
+    }
 }
 
 const ACTIVE_JOB_STATUSES = new Set(['pending', 'queued', 'running']);
@@ -298,7 +309,26 @@ function escapeHtml(value) {
     }[char] || char));
 }
 
+function captureApprovalsDetailsState() {
+    if (!approvalsEl) return;
+    const hero = approvalsEl.querySelector('.approval-hero-card');
+    if (!hero) return;
+    const docIdAttr = hero.getAttribute('data-document-id');
+    const docId = Number(docIdAttr);
+    if (!Number.isFinite(docId)) return;
+    const suggestionEl = hero.querySelector('details[data-kind="suggestion"]');
+    const evaluationEl = hero.querySelector('details[data-kind="evaluation"]');
+    approvalsDetailsState[docId] = {
+        suggestion: !!(suggestionEl && suggestionEl.open),
+        evaluation: !!(evaluationEl && evaluationEl.open),
+    };
+}
+
 async function refresh() {
+    const activityScrollTop = activityEl ? activityEl.scrollTop : 0;
+    const listContainer = approvalsEl ? approvalsEl.querySelector('.approval-list-container') : null;
+    const approvalsScrollTop = listContainer ? listContainer.scrollTop : 0;
+    captureApprovalsDetailsState();
     const approvalsPromise = fetchApprovalsPage(approvalsState.page);
     const [jobs, metrics, scanner, approvals] = await Promise.all([
         fetchJSON('/api/jobs?limit=50'),
@@ -307,9 +337,16 @@ async function refresh() {
         approvalsPromise,
     ]);
     activityEl.innerHTML = renderActivity(jobs);
+    if (activityScrollTop > 0) {
+        activityEl.scrollTop = activityScrollTop;
+    }
     queueEl.textContent = `Queued ${metrics.queued} · Running ${metrics.running} · Failed ${metrics.failed} · Completed today ${metrics.completed_today} · Awaiting approval ${metrics.awaiting_approval}`;
     applyApprovalsData(approvals);
     approvalsEl.innerHTML = renderApprovals();
+    const newListContainer = approvalsEl.querySelector('.approval-list-container');
+    if (newListContainer && approvalsScrollTop > 0) {
+        newListContainer.scrollTop = approvalsScrollTop;
+    }
     const statusBits = [];
     if (scanner.last_run) statusBits.push(`last run ${new Date(scanner.last_run).toLocaleTimeString()}`);
     if (scanner.queued_this_run !== null) statusBits.push(`${scanner.queued_this_run} new jobs`);
