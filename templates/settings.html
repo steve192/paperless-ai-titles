@@ -68,6 +68,23 @@
                 <input type="number" name="llm_request_timeout" min="5" />
             </label>
         </fieldset>
+        <fieldset class="wide">
+            <legend>Prompt</legend>
+            <p class="hint">Customize the system prompt used for title generation. Document text and metadata are still sent separately.</p>
+            <label class="toggle">
+                <input type="radio" name="llm_use_custom_prompt" value="false" checked />
+                <span>Use built-in prompt</span>
+            </label>
+            <label class="toggle">
+                <input type="radio" name="llm_use_custom_prompt" value="true" />
+                <span>Use custom prompt</span>
+            </label>
+            <label class="prompt-editor">
+                Prompt text
+                <textarea name="llm_custom_prompt" rows="8" class="prompt-textarea" spellcheck="false"></textarea>
+                <span class="hint">Keep the JSON response format requirements in your prompt.</span>
+            </label>
+        </fieldset>
         <fieldset>
             <legend>Workflow</legend>
             <label class="toggle">
@@ -102,10 +119,15 @@
     </form>
     <p id="settings-status" class="hint"></p>
 </section>
+<textarea id="builtin-prompt-template" hidden>{{ builtin_prompt | safe }}</textarea>
 <script>
 const form = document.getElementById('settings-form');
 const statusEl = document.getElementById('settings-status');
 const pickerInputs = document.querySelectorAll('[data-picker]');
+const promptRadios = document.querySelectorAll('input[name="llm_use_custom_prompt"]');
+const promptTextarea = document.querySelector('textarea[name="llm_custom_prompt"]');
+const builtinPromptTemplate = document.getElementById('builtin-prompt-template');
+const builtinPrompt = builtinPromptTemplate ? builtinPromptTemplate.value : '';
 const metadataStore = {
     key: null,
     promise: null,
@@ -137,6 +159,7 @@ async function loadSettings() {
             applyValue(input, map[input.name]);
         }
     });
+    syncPromptControls({ seedIfEmpty: true });
     ensureMetadataLoaded().catch(() => {});
 }
 
@@ -167,6 +190,26 @@ function gatherSettings() {
         }
     });
     return data;
+}
+
+function isCustomPromptSelected() {
+    return Array.from(promptRadios).some((input) => input.checked && input.value === 'true');
+}
+
+function syncPromptControls({ seedIfEmpty = false } = {}) {
+    if (!promptTextarea) return;
+    const useCustom = isCustomPromptSelected();
+    promptTextarea.readOnly = !useCustom;
+    promptTextarea.classList.toggle('read-only', !useCustom);
+    if (useCustom && seedIfEmpty && !promptTextarea.value.trim()) {
+        promptTextarea.value = builtinPrompt;
+    }
+}
+
+function setupPromptControls() {
+    promptRadios.forEach((input) => {
+        input.addEventListener('change', () => syncPromptControls({ seedIfEmpty: true }));
+    });
 }
 
 function metadataKey(settings) {
@@ -434,6 +477,7 @@ function escapeHtml(value) {
 }
 
 setupPickerControls();
+setupPromptControls();
 loadSettings();
 </script>
 {% endblock %}

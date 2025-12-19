@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from ..clients.llm_client import BUILTIN_TITLE_PROMPT
 from ..core.models import ProcessingJobStatus
 from ..services.settings import SettingsService
 
@@ -33,7 +34,13 @@ async def setup_page(request: Request):
 
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
-    return templates.TemplateResponse("settings.html", {"request": request})
+    return templates.TemplateResponse(
+        "settings.html",
+        {
+            "request": request,
+            "builtin_prompt": BUILTIN_TITLE_PROMPT,
+        },
+    )
 
 
 @router.get("/jobs/history", response_class=HTMLResponse)

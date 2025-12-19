@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     llm_confidence_threshold: float = Field(default=0.6)
     llm_request_timeout: int = Field(default=300)
     llm_prompt_char_limit: int = Field(default=8000, ge=500)
+    llm_use_custom_prompt: bool = Field(default=False)
+    llm_custom_prompt: str = Field(default="")
 
     auto_apply_titles: bool = Field(default=True)
 

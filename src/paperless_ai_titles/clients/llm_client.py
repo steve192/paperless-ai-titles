@@ -13,6 +13,23 @@ from ..services.settings import SettingsService
 
 logger = logging.getLogger(__name__)
 
+BUILTIN_TITLE_PROMPT = (
+    "Task:\n"
+    "Write a concise, specific document title for a document management system.\n"
+    "\n"
+    "Rules:\n"
+    "- Input is OCR text and may contain errors.\n"
+    "- Use the same language as the document.\n"
+    "- Focus on the main topic; avoid generic titles like \"Document\" or \"Report\".\n"
+    "- If the author/sender is clear, include them in the title.\n"
+    "- If the text is unclear or OCR is bad, lower confidence.\n"
+    "\n"
+    "Output:\n"
+    "Return ONLY JSON: {\"title\":\"<title>\",\"confidence\":0-1}\n"
+    "Confidence must be a float between 0 and 1."
+)
+
+
 @dataclass
 class TitleSuggestion:
     title: str
@@ -55,11 +72,7 @@ class TitleLLMClient:
             context_lines.append(f"Date: {created_value}")
         context = "\n".join(context_lines)
         snippet = self._truncate_text(text)
-        instructions = (
-            "You generate concise, specific document titles. Respond ONLY with JSON in the format "
-            '{"title":"<title>","confidence":0-1}. '
-            "Confidence must be a float between 0 and 1."
-        )
+        instructions = self._title_system_prompt()
         user_prompt = f"{context}\nDocument text snippet:\n{snippet}" if context else f"Document text snippet:\n{snippet}"
         payload = {
             "model": self.settings.llm_model_name,
@@ -136,6 +149,12 @@ class TitleLLMClient:
     def _truncate_text(self, text: str) -> str:
         limit = max(1, int(self.settings.llm_prompt_char_limit))
         return text[:limit]
+
+    def _title_system_prompt(self) -> str:
+        custom_prompt = self.settings.llm_custom_prompt or ""
+        if self.settings.llm_use_custom_prompt and custom_prompt.strip():
+            return custom_prompt
+        return BUILTIN_TITLE_PROMPT
 
     async def _post_with_json_retry(
         self,

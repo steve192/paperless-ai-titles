@@ -139,6 +139,36 @@ th, td {
     margin-top: 1rem;
 }
 
+.prompt-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+}
+
+.prompt-textarea {
+    width: 100%;
+    min-height: 180px;
+    resize: vertical;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 0.75rem;
+    padding: 0.65rem 0.9rem;
+    color: var(--ink);
+    font: inherit;
+    line-height: 1.5;
+}
+
+.prompt-textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(77,225,193,0.25);
+}
+
+.prompt-textarea.read-only {
+    opacity: 0.7;
+}
+
 @media (max-width: 900px) {
     .settings-grid {
         grid-template-columns: 1fr;

@@ -21,6 +21,8 @@ CONFIGURABLE_KEYS = {
     "llm_confidence_threshold",
     "llm_request_timeout",
     "llm_prompt_char_limit",
+    "llm_use_custom_prompt",
+    "llm_custom_prompt",
     "auto_apply_titles",
     "scan_interval_seconds",
     "scanner_page_size",
