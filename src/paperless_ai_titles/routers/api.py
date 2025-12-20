@@ -1,11 +1,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import and_, func, not_, or_, select
-
-from ..core.database import db_session
 from ..core.models import (
-    DocumentRecord,
     DocumentStatus,
     ProcessingJob,
     ProcessingJobStatus,
@@ -39,6 +35,8 @@ from ..services.onboarding import OnboardingConnectionError, OnboardingService
 from ..services.processing import ProcessingService
 from ..services.scanner import get_scanner_service
 from ..services.settings import CONFIGURABLE_KEYS, SettingsService
+from ..repositories.unit_of_work import UnitOfWork
+from ..core.status_sets import PROCESSING_JOB_ALL_STATUS_SET
 
 router = APIRouter(prefix="/api", tags=["api"])
 settings_service = SettingsService()
@@ -90,10 +88,8 @@ def update_setting(payload: SettingPayload) -> SettingRead:
 
 @router.get("/jobs", response_model=list[ProcessingJobRead])
 def list_jobs(limit: int = 25) -> list[ProcessingJobRead]:
-    with db_session() as session:
-        stmt = select(ProcessingJob).order_by(ProcessingJob.created_at.desc()).limit(limit)
-        jobs = session.execute(stmt).scalars().all()
-        return jobs
+    with UnitOfWork() as uow:
+        return uow.jobs.list_recent(limit)
 
 
 @router.get("/jobs/history", response_model=ProcessingJobPage)
@@ -108,19 +104,16 @@ def job_history(
 ) -> ProcessingJobPage:
     limit = max(1, min(limit, 100))
     page = max(1, page)
-    filters: list = []
     if status:
         normalized_status = status.lower()
-        valid_statuses = {value.value for value in ProcessingJobStatus}
+        valid_statuses = PROCESSING_JOB_ALL_STATUS_SET
         if normalized_status not in valid_statuses:
             raise HTTPException(status_code=400, detail="Invalid job status filter")
-        filters.append(ProcessingJob.status == normalized_status)
     if source:
-        filters.append(func.lower(ProcessingJob.source) == source.lower())
+        source = source.strip()
     if document_id is not None:
         if document_id <= 0:
             raise HTTPException(status_code=400, detail="document_id must be positive")
-        filters.append(ProcessingJob.document_id == document_id)
     sort_key = (sort_by or DEFAULT_JOB_SORT).lower()
     column = JOB_SORT_COLUMNS.get(sort_key)
     if column is None:
@@ -128,27 +121,24 @@ def job_history(
     direction = (sort_dir or "desc").lower()
     if direction not in {"asc", "desc"}:
         raise HTTPException(status_code=400, detail="sort_dir must be 'asc' or 'desc'")
-    order_clause = column.asc() if direction == "asc" else column.desc()
     offset = (page - 1) * limit
-    with db_session() as session:
-        stmt = select(ProcessingJob)
-        if filters:
-            stmt = stmt.where(*filters)
-        stmt = stmt.order_by(order_clause, ProcessingJob.id.desc()).limit(limit).offset(offset)
-        jobs = session.execute(stmt).scalars().all()
-        count_stmt = select(func.count()).select_from(ProcessingJob)
-        if filters:
-            count_stmt = count_stmt.where(*filters)
-        total = session.execute(count_stmt).scalar_one()
+    with UnitOfWork() as uow:
+        jobs, total = uow.jobs.list_history(
+            status=normalized_status if status else None,
+            source=source,
+            document_id=document_id,
+            sort_column=column,
+            sort_dir=direction,
+            limit=limit,
+            offset=offset,
+        )
     return ProcessingJobPage(items=jobs, total=total, page=page, limit=limit)
 
 
 @router.get("/documents", response_model=list[DocumentRecordRead])
 def list_documents(limit: int = 25) -> list[DocumentRecordRead]:
-    with db_session() as session:
-        stmt = select(DocumentRecord).order_by(DocumentRecord.processed_at.desc()).limit(limit)
-        records = session.execute(stmt).scalars().all()
-        return records
+    with UnitOfWork() as uow:
+        return uow.documents.list_recent(limit)
 
 
 @router.post("/enqueue", response_model=EnqueueResponse)
@@ -159,20 +149,9 @@ def enqueue_endpoint(request: EnqueueRequest) -> EnqueueResponse:
 
 @router.post("/force-reprocess")
 def force_reprocess(request: ForceReprocessRequest) -> dict:
-    def _applied_title_change_condition():
-        return and_(
-            DocumentRecord.ai_title.is_not(None),
-            func.length(func.trim(DocumentRecord.ai_title)) > 0,
-        )
-
-    def _denied_title_change_condition():
-        return DocumentRecord.status == DocumentStatus.REJECTED.value
-
     scope = request.scope or "selected"
     ignore_applied = request.ignore_documents_with_applied_title_changes
     ignore_denied = request.ignore_documents_with_denied_title_changes
-    applied_cond = _applied_title_change_condition()
-    denied_cond = _denied_title_change_condition()
     doc_ids = [doc_id for doc_id in (request.document_ids or []) if doc_id and doc_id > 0]
     deduped: list[int] = []
     seen: set[int] = set()
@@ -187,37 +166,23 @@ def force_reprocess(request: ForceReprocessRequest) -> dict:
         scope = "all"
 
     if doc_ids and (ignore_applied or ignore_denied):
-        exclusion_cond = None
-        if ignore_applied and ignore_denied:
-            exclusion_cond = or_(applied_cond, denied_cond)
-        elif ignore_applied:
-            exclusion_cond = applied_cond
-        elif ignore_denied:
-            exclusion_cond = denied_cond
-        with db_session() as session:
-            stmt = select(DocumentRecord.document_id).where(
-                DocumentRecord.document_id.in_(doc_ids),
-                exclusion_cond,
+        with UnitOfWork() as uow:
+            doc_ids = uow.documents.filter_ids(
+                doc_ids,
+                exclude_applied=ignore_applied,
+                exclude_denied=ignore_denied,
             )
-            excluded_ids = set(session.execute(stmt).scalars().all())
-        if excluded_ids:
-            doc_ids = [doc_id for doc_id in doc_ids if doc_id not in excluded_ids]
         if had_explicit_doc_ids and not doc_ids:
             raise HTTPException(status_code=400, detail="No documents matched reprocess criteria")
 
     if not doc_ids:
-        with db_session() as session:
-            stmt = select(DocumentRecord.document_id)
-            filters = []
-            if scope == "failed":
-                filters.append(DocumentRecord.status == DocumentStatus.FAILED.value)
-            if ignore_applied:
-                filters.append(not_(applied_cond))
-            if ignore_denied:
-                filters.append(not_(denied_cond))
-            if filters:
-                stmt = stmt.where(*filters)
-            doc_ids = session.execute(stmt).scalars().all()
+        with UnitOfWork() as uow:
+            status_filter = DocumentStatus.FAILED.value if scope == "failed" else None
+            doc_ids = uow.documents.find_ids(
+                status=status_filter,
+                exclude_applied=ignore_applied,
+                exclude_denied=ignore_denied,
+            )
 
     if not doc_ids:
         raise HTTPException(status_code=400, detail="No documents matched reprocess criteria")
@@ -238,27 +203,13 @@ def paperless_hook(payload: HookPayload) -> EnqueueResponse:
 
 @router.get("/queue/metrics", response_model=QueueMetrics)
 def queue_metrics() -> QueueMetrics:
-    with db_session() as session:
-        counts = session.execute(
-            select(ProcessingJob.status, func.count()).group_by(ProcessingJob.status)
-        ).all()
-        count_map = {status: total for status, total in counts}
+    with UnitOfWork() as uow:
+        count_map = uow.jobs.status_counts()
         start_of_day = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-        completed_today = session.execute(
-            select(func.count()).where(
-                ProcessingJob.status.in_(
-                    [
-                        ProcessingJobStatus.COMPLETED.value,
-                        ProcessingJobStatus.SKIPPED.value,
-                        ProcessingJobStatus.REJECTED.value,
-                    ]
-                ),
-                ProcessingJob.completed_at >= start_of_day,
-            )
-        ).scalar_one()
-        return QueueMetrics(
-            queued=count_map.get(ProcessingJobStatus.QUEUED.value, 0),
-            running=count_map.get(ProcessingJobStatus.RUNNING.value, 0),
+        completed_today = uow.jobs.count_completed_since(start_of_day)
+    return QueueMetrics(
+        queued=count_map.get(ProcessingJobStatus.QUEUED.value, 0),
+        running=count_map.get(ProcessingJobStatus.RUNNING.value, 0),
             failed=count_map.get(ProcessingJobStatus.FAILED.value, 0),
             completed_today=completed_today,
             awaiting_approval=count_map.get(ProcessingJobStatus.AWAITING_APPROVAL.value, 0),
@@ -323,18 +274,9 @@ def approvals(limit: int = 25, page: int = 1) -> ApprovalPage:
     limit = max(1, min(limit, 100))
     page = max(1, page)
     offset = (page - 1) * limit
-    with db_session() as session:
-        base_stmt = select(DocumentRecord).where(
-            DocumentRecord.status == DocumentStatus.AWAITING_APPROVAL.value
-        )
-        count_stmt = (
-            select(func.count())
-            .select_from(DocumentRecord)
-            .where(DocumentRecord.status == DocumentStatus.AWAITING_APPROVAL.value)
-        )
-        total = session.execute(count_stmt).scalar_one()
-        stmt = base_stmt.order_by(DocumentRecord.document_id.desc()).limit(limit).offset(offset)
-        records = session.execute(stmt).scalars().all()
+    with UnitOfWork() as uow:
+        total = uow.documents.count_awaiting_approval()
+        records = uow.documents.list_awaiting_approval(limit=limit, offset=offset)
     approvals: list[ApprovalRecord] = []
     for record in records:
         pending = (record.extra or {}).get("pending") if record.extra else None

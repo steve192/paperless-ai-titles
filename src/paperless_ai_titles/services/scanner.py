@@ -7,19 +7,12 @@ from datetime import datetime
 from typing import Any, Optional
 
 from ..clients.paperless_client import PaperlessClient
-from ..core.database import db_session
-from ..core.models import DocumentRecord, DocumentStatus
+from ..core.status_sets import is_document_finalized
+from ..repositories.unit_of_work import UnitOfWork
 from ..services.jobs import enqueue_document
 from ..services.settings import SettingsService
 
 logger = logging.getLogger(__name__)
-
-FINALIZED_STATUSES = {
-    DocumentStatus.COMPLETED.value,
-    DocumentStatus.SKIPPED.value,
-    DocumentStatus.REJECTED.value,
-}
-
 
 @dataclass
 class ScannerStatus:
@@ -143,8 +136,7 @@ def _needs_worker_pass(doc_id: int, status_map: dict[int, str | None]) -> tuple[
     status = status_map.get(doc_id)
     if not status:
         return True, None
-    normalized = status.lower()
-    if normalized in FINALIZED_STATUSES:
+    if is_document_finalized(status):
         return False, status
     return True, status
 
@@ -153,13 +145,8 @@ def _load_document_status_map(document_ids: list[int | None]) -> dict[int, str |
     clean_ids = [doc_id for doc_id in document_ids if isinstance(doc_id, int)]
     if not clean_ids:
         return {}
-    with db_session() as session:
-        records = (
-            session.query(DocumentRecord.document_id, DocumentRecord.status)
-            .filter(DocumentRecord.document_id.in_(clean_ids))
-            .all()
-        )
-    return {doc_id: status for doc_id, status in records}
+    with UnitOfWork() as uow:
+        return uow.documents.fetch_status_map(clean_ids)
 
 
 _SCANNER = ScannerService()

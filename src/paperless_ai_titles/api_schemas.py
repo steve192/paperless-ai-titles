@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SettingPayload(BaseModel):
@@ -69,6 +69,8 @@ class EnqueueResponse(BaseModel):
 
 
 class ForceReprocessRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     document_ids: list[int] | None = None
     include_locked: bool = False
     scope: Literal["selected", "all", "failed"] = "selected"
@@ -76,9 +78,6 @@ class ForceReprocessRequest(BaseModel):
         default=False, alias="respect_existing_titles"
     )
     ignore_documents_with_denied_title_changes: bool = False
-
-    class Config:
-        allow_population_by_field_name = True
 
 
 class HookPayload(BaseModel):

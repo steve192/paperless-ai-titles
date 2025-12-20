@@ -127,3 +127,70 @@ def test_setup_complete_requires_successful_connections(api_client, monkeypatch)
     assert detail["status_code"] == 500
     assert "llm.local" in detail["url"]
     assert "Internal error" in detail["message"]
+
+
+def test_force_reprocess_filters_applied_and_denied(api_client, monkeypatch):
+    from paperless_ai_titles.routers import api as api_module
+
+    queued: list[int] = []
+
+    def fake_enqueue(document_id, source="manual", reason=None, force=False):  # noqa: ARG001
+        queued.append(document_id)
+        return None, True
+
+    monkeypatch.setattr(api_module, "enqueue_document", fake_enqueue)
+
+    with db_session() as session:
+        session.add(
+            DocumentRecord(
+                document_id=1,
+                status=DocumentStatus.COMPLETED.value,
+                ai_title="Applied title",
+            )
+        )
+        session.add(DocumentRecord(document_id=2, status=DocumentStatus.REJECTED.value))
+        session.add(DocumentRecord(document_id=3, status=DocumentStatus.FAILED.value))
+        session.add(DocumentRecord(document_id=4, status=DocumentStatus.COMPLETED.value))
+
+    response = api_client.post(
+        "/api/force-reprocess",
+        json={
+            "scope": "all",
+            "ignore_documents_with_applied_title_changes": True,
+            "ignore_documents_with_denied_title_changes": True,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["queued"] == 2
+    assert set(queued) == {3, 4}
+
+
+def test_force_reprocess_explicit_ids_can_error_when_all_excluded(api_client, monkeypatch):
+    from paperless_ai_titles.routers import api as api_module
+
+    def fake_enqueue(document_id, source="manual", reason=None, force=False):  # noqa: ARG001
+        raise AssertionError("enqueue_document should not be called")
+
+    monkeypatch.setattr(api_module, "enqueue_document", fake_enqueue)
+
+    with db_session() as session:
+        session.add(
+            DocumentRecord(
+                document_id=10,
+                status=DocumentStatus.COMPLETED.value,
+                ai_title="Applied title",
+            )
+        )
+        session.add(DocumentRecord(document_id=11, status=DocumentStatus.REJECTED.value))
+
+    response = api_client.post(
+        "/api/force-reprocess",
+        json={
+            "scope": "selected",
+            "document_ids": [10, 11],
+            "ignore_documents_with_applied_title_changes": True,
+            "ignore_documents_with_denied_title_changes": True,
+        },
+    )
+    assert response.status_code == 400
+    assert "No documents matched reprocess criteria" in response.json()["detail"]
