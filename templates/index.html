@@ -160,16 +160,16 @@ function renderPrimaryApproval(item) {
                     <p class="title-text">${escapeHtml(item.suggested_title)}</p>
                 </div>
             </div>
+            <div class="decision-actions">
+                <button class="decision-button deny" data-approval-action="deny" data-document-id="${item.document_id}">✕ Deny</button>
+                <button class="decision-button approve" data-approval-action="approve" data-document-id="${item.document_id}">✓ Approve</button>
+            </div>
             <div class="hero-meta">
                 <a class="info-chip" href="${PAPERLESS_DOC_URL_PREFIX}${item.document_id}/" target="_blank" rel="noopener">Doc #${item.document_id}</a>
                 <span class="muted small">${formatDate(item.created_at)}</span>
             </div>
             ${ocrExcerpt}
             ${detailBlocks.length ? `<div class="hero-details">${detailBlocks.join('')}</div>` : ''}
-            <div class="decision-actions">
-                <button class="decision-button deny" data-approval-action="deny" data-document-id="${item.document_id}">✕ Deny</button>
-                <button class="decision-button approve" data-approval-action="approve" data-document-id="${item.document_id}">✓ Approve</button>
-            </div>
         </article>
     `;
 }
@@ -324,6 +324,29 @@ function captureApprovalsDetailsState() {
     };
 }
 
+function scrollApprovalHeroIntoView() {
+    if (!approvalsEl) return;
+    const hero = approvalsEl.querySelector('.approval-hero-card');
+    if (!hero) return;
+    hero.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function removeApprovalFromState(documentId) {
+    if (!approvalsState.items.length) return false;
+    const nextItems = approvalsState.items.filter((item) => item.document_id !== documentId);
+    if (nextItems.length === approvalsState.items.length) {
+        return false;
+    }
+    approvalsState.items = nextItems;
+    if (typeof approvalsState.total === 'number' && approvalsState.total > 0) {
+        approvalsState.total -= 1;
+    }
+    if (!approvalsState.items.length && approvalsState.page > 1) {
+        approvalsState.page -= 1;
+    }
+    return true;
+}
+
 async function refresh() {
     const activityScrollTop = activityEl ? activityEl.scrollTop : 0;
     const listContainer = approvalsEl ? approvalsEl.querySelector('.approval-list-container') : null;
@@ -383,24 +406,24 @@ if (approvalsEl) {
             const url = action === 'approve'
                 ? `/api/approvals/${documentId}/approve`
                 : `/api/approvals/${documentId}/deny`;
-            const working = action === 'approve' ? 'Applying…' : 'Denying…';
-            await handleApprovalAction(actionEl, url, working);
+            void handleApprovalAction(documentId, url);
         }
     });
 }
 
-async function handleApprovalAction(button, url, workingLabel) {
-    button.disabled = true;
-    const original = button.textContent;
-    button.textContent = workingLabel;
+async function handleApprovalAction(documentId, url) {
+    if (removeApprovalFromState(documentId)) {
+        approvalsEl.innerHTML = renderApprovals();
+        scrollApprovalHeroIntoView();
+    }
     try {
         await fetchJSON(url, { method: 'POST' });
         await refresh();
+        scrollApprovalHeroIntoView();
     } catch (error) {
         alert(error.message || 'Action failed');
+        await refresh();
     } finally {
-        button.disabled = false;
-        button.textContent = original;
     }
 }
 
