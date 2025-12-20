@@ -53,7 +53,11 @@
         <div class="stack">
             <label for="process-existing-checkbox">
                 <input id="process-existing-checkbox" type="checkbox" />
-                Also process documents where title was set
+                Include documents with applied title changes
+            </label>
+            <label for="process-denied-checkbox">
+                <input id="process-denied-checkbox" type="checkbox" />
+                Include documents with denied title changes
             </label>
             <div class="reprocess-actions">
                 <button type="button" class="contrast" data-reprocess-scope="all">Reprocess all</button>
@@ -430,7 +434,8 @@ async function handleApprovalAction(documentId, url) {
 const reprocessForm = document.getElementById('reprocess-form');
 const reprocessStatusEl = document.getElementById('reprocess-status');
 const reprocessButtons = document.querySelectorAll('[data-reprocess-scope]');
-const includeExistingCheckbox = document.getElementById('process-existing-checkbox');
+const includeAppliedCheckbox = document.getElementById('process-existing-checkbox');
+const includeDeniedCheckbox = document.getElementById('process-denied-checkbox');
 
 function updateReprocessStatus(message) {
     if (!reprocessStatusEl) return;
@@ -438,11 +443,18 @@ function updateReprocessStatus(message) {
     reprocessStatusEl.textContent = message;
 }
 
-function shouldRespectExistingTitles() {
-    if (!includeExistingCheckbox) {
+function shouldIgnoreAppliedTitleChanges() {
+    if (!includeAppliedCheckbox) {
         return true;
     }
-    return !includeExistingCheckbox.checked;
+    return !includeAppliedCheckbox.checked;
+}
+
+function shouldIgnoreDeniedTitleChanges() {
+    if (!includeDeniedCheckbox) {
+        return true;
+    }
+    return !includeDeniedCheckbox.checked;
 }
 
 function toggleWorkingState(button, workingLabel = 'Queuing…') {
@@ -480,7 +492,8 @@ if (reprocessButtons.length) {
             const scope = button.dataset.reprocessScope || 'all';
             const payload = {
                 scope,
-                respect_existing_titles: shouldRespectExistingTitles(),
+                ignore_documents_with_applied_title_changes: shouldIgnoreAppliedTitleChanges(),
+                ignore_documents_with_denied_title_changes: shouldIgnoreDeniedTitleChanges(),
             };
             await triggerReprocess(payload, button);
         });
@@ -507,7 +520,8 @@ if (reprocessForm) {
         const payload = {
             scope: 'selected',
             document_ids: documentIds,
-            respect_existing_titles: shouldRespectExistingTitles(),
+            ignore_documents_with_applied_title_changes: shouldIgnoreAppliedTitleChanges(),
+            ignore_documents_with_denied_title_changes: shouldIgnoreDeniedTitleChanges(),
         };
         await triggerReprocess(payload, event.currentTarget.querySelector('button[type="submit"]'));
         event.currentTarget.reset();

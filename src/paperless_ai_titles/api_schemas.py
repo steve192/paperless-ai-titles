@@ -72,7 +72,13 @@ class ForceReprocessRequest(BaseModel):
     document_ids: list[int] | None = None
     include_locked: bool = False
     scope: Literal["selected", "all", "failed"] = "selected"
-    respect_existing_titles: bool = False
+    ignore_documents_with_applied_title_changes: bool = Field(
+        default=False, alias="respect_existing_titles"
+    )
+    ignore_documents_with_denied_title_changes: bool = False
+
+    class Config:
+        allow_population_by_field_name = True
 
 
 class HookPayload(BaseModel):

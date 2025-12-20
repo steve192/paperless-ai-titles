@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, not_, or_, select
 
 from ..core.database import db_session
 from ..core.models import (
@@ -159,13 +159,20 @@ def enqueue_endpoint(request: EnqueueRequest) -> EnqueueResponse:
 
 @router.post("/force-reprocess")
 def force_reprocess(request: ForceReprocessRequest) -> dict:
-    def _missing_original_title_condition():
-        return or_(
-            DocumentRecord.original_title.is_(None),
-            func.length(func.trim(DocumentRecord.original_title)) == 0,
+    def _applied_title_change_condition():
+        return and_(
+            DocumentRecord.ai_title.is_not(None),
+            func.length(func.trim(DocumentRecord.ai_title)) > 0,
         )
 
+    def _denied_title_change_condition():
+        return DocumentRecord.status == DocumentStatus.REJECTED.value
+
     scope = request.scope or "selected"
+    ignore_applied = request.ignore_documents_with_applied_title_changes
+    ignore_denied = request.ignore_documents_with_denied_title_changes
+    applied_cond = _applied_title_change_condition()
+    denied_cond = _denied_title_change_condition()
     doc_ids = [doc_id for doc_id in (request.document_ids or []) if doc_id and doc_id > 0]
     deduped: list[int] = []
     seen: set[int] = set()
@@ -175,19 +182,28 @@ def force_reprocess(request: ForceReprocessRequest) -> dict:
         seen.add(doc_id)
         deduped.append(doc_id)
     doc_ids = deduped
+    had_explicit_doc_ids = bool(doc_ids)
     if not doc_ids and scope == "selected":
         scope = "all"
 
-    if doc_ids and request.respect_existing_titles:
+    if doc_ids and (ignore_applied or ignore_denied):
+        exclusion_cond = None
+        if ignore_applied and ignore_denied:
+            exclusion_cond = or_(applied_cond, denied_cond)
+        elif ignore_applied:
+            exclusion_cond = applied_cond
+        elif ignore_denied:
+            exclusion_cond = denied_cond
         with db_session() as session:
-            stmt = (
-                select(DocumentRecord.document_id)
-                .where(
-                    DocumentRecord.document_id.in_(doc_ids),
-                    _missing_original_title_condition(),
-                )
+            stmt = select(DocumentRecord.document_id).where(
+                DocumentRecord.document_id.in_(doc_ids),
+                exclusion_cond,
             )
-            doc_ids = session.execute(stmt).scalars().all()
+            excluded_ids = set(session.execute(stmt).scalars().all())
+        if excluded_ids:
+            doc_ids = [doc_id for doc_id in doc_ids if doc_id not in excluded_ids]
+        if had_explicit_doc_ids and not doc_ids:
+            raise HTTPException(status_code=400, detail="No documents matched reprocess criteria")
 
     if not doc_ids:
         with db_session() as session:
@@ -195,8 +211,10 @@ def force_reprocess(request: ForceReprocessRequest) -> dict:
             filters = []
             if scope == "failed":
                 filters.append(DocumentRecord.status == DocumentStatus.FAILED.value)
-            if request.respect_existing_titles:
-                filters.append(_missing_original_title_condition())
+            if ignore_applied:
+                filters.append(not_(applied_cond))
+            if ignore_denied:
+                filters.append(not_(denied_cond))
             if filters:
                 stmt = stmt.where(*filters)
             doc_ids = session.execute(stmt).scalars().all()
