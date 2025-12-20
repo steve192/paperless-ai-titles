@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional
 
-from sqlalchemy import select
-
 from ..core.config import Settings, get_settings
-from ..core.database import db_session
 from ..core.models import Setting
+from ..repositories.unit_of_work import UnitOfWork
 
 CONFIGURABLE_KEYS = {
     "paperless_base_url",
@@ -46,30 +44,19 @@ class SettingsService:
         self._base = get_settings()
 
     def list_entries(self) -> list[Setting]:
-        with db_session() as session:
-            stmt = select(Setting).order_by(Setting.key)
-            return session.execute(stmt).scalars().all()
+        with UnitOfWork() as uow:
+            return uow.settings.list_entries()
 
     def save(self, key: str, value: Any) -> Setting:
         if key not in CONFIGURABLE_KEYS and key != ONBOARDING_FLAG:
             raise ValueError(f"Key '{key}' is not configurable")
         text_value = str(value)
-        with db_session() as session:
-            entry = session.get(Setting, key)
-            if entry is None:
-                entry = Setting(key=key, value=text_value)
-            else:
-                entry.value = text_value
-            session.add(entry)
-            session.flush()
-            session.refresh(entry)
-            return entry
+        with UnitOfWork() as uow:
+            return uow.settings.save(key, text_value)
 
     def delete(self, key: str) -> None:
-        with db_session() as session:
-            entry = session.get(Setting, key)
-            if entry:
-                session.delete(entry)
+        with UnitOfWork() as uow:
+            uow.settings.delete(key)
 
     def overrides(self) -> Dict[str, Any]:
         entries = self.list_entries()
@@ -97,8 +84,8 @@ class SettingsService:
         return defaults
 
     def onboarding_completed(self) -> bool:
-        with db_session() as session:
-            flag = session.get(Setting, ONBOARDING_FLAG)
+        with UnitOfWork() as uow:
+            flag = uow.settings.get(ONBOARDING_FLAG)
             if flag is None:
                 return False
             return flag.value.lower() in {"1", "true", "yes"}
@@ -112,9 +99,12 @@ class SettingsService:
     def needs_onboarding(self) -> bool:
         if not self.onboarding_completed():
             return True
-        effective = self.effective_settings().model_dump()
+        effective = self._effective_dict()
         return any(not effective.get(key) for key in REQUIRED_KEYS)
 
     def missing_keys(self) -> list[str]:
-        effective = self.effective_settings().model_dump()
+        effective = self._effective_dict()
         return [key for key in REQUIRED_KEYS if not effective.get(key)]
+
+    def _effective_dict(self) -> dict[str, Any]:
+        return self.effective_settings().model_dump()

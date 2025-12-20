@@ -2,27 +2,19 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Tuple
+from typing import TYPE_CHECKING, Tuple
 
 from rq import Retry
 
-from ..core.database import db_session
-from ..core.models import (
-    DocumentRecord,
-    DocumentStatus,
-    ProcessingJob,
-    ProcessingJobStatus,
-)
+from ..core.models import DocumentStatus, ProcessingJobStatus
 from ..queue_factory import get_queue
 from ..rq_task_handlers import process_document
 from ..services.settings import SettingsService
+from ..repositories.unit_of_work import UnitOfWork
 
-ACTIVE_STATUSES = {
-    ProcessingJobStatus.QUEUED.value,
-    ProcessingJobStatus.RUNNING.value,
-    ProcessingJobStatus.PENDING.value,
-    ProcessingJobStatus.AWAITING_APPROVAL.value,
-}
+if TYPE_CHECKING:
+    from ..core.models import ProcessingJob
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,16 +28,8 @@ def enqueue_document(
     """Create a processing job if needed and push it to the queue."""
     settings = SettingsService().effective_settings()
     queue = get_queue()
-    with db_session() as session:
-        existing = (
-            session.query(ProcessingJob)
-            .filter(
-                ProcessingJob.document_id == document_id,
-                ProcessingJob.status.in_(ACTIVE_STATUSES),
-            )
-            .order_by(ProcessingJob.created_at.desc())
-            .first()
-        )
+    with UnitOfWork() as uow:
+        existing = uow.jobs.find_latest_active(document_id)
         if existing and not force:
             logger.debug(
                 "Reusing active job %s for document %s (source=%s)",
@@ -55,34 +39,24 @@ def enqueue_document(
             )
             return existing, False
 
-        job = ProcessingJob(
+        job = uow.jobs.create_job(
             document_id=document_id,
-            status=ProcessingJobStatus.QUEUED,
+            status=ProcessingJobStatus.QUEUED.value,
             source=source,
             reason=reason,
             queued_at=datetime.utcnow(),
         )
-        session.add(job)
-        session.flush()
 
-        doc = session.get(DocumentRecord, document_id) or DocumentRecord(document_id=document_id)
-        doc.status = DocumentStatus.QUEUED
+        doc = uow.documents.get_or_create(document_id)
+        doc.status = DocumentStatus.QUEUED.value
         doc.last_error = None
-        session.add(doc)
+        uow.documents.add(doc)
 
         # If we just created a new job while there were other active jobs
         # for this document (e.g. via force reprocess), mark the previous
         # active jobs as skipped so that only the newest job remains
         # active in history.
-        previous_active_jobs = (
-            session.query(ProcessingJob)
-            .filter(
-                ProcessingJob.document_id == document_id,
-                ProcessingJob.status.in_(ACTIVE_STATUSES),
-                ProcessingJob.id != job.id,
-            )
-            .all()
-        )
+        previous_active_jobs = uow.jobs.list_active_excluding(document_id, exclude_job_id=job.id)
         for previous in previous_active_jobs:
             logger.debug(
                 "Marking previous job %s for document %s as skipped in favor of job %s",
@@ -93,7 +67,7 @@ def enqueue_document(
             previous.status = ProcessingJobStatus.SKIPPED.value
             previous.reason = f"superseded by job {job.id}"
             previous.completed_at = datetime.utcnow()
-            session.add(previous)
+            uow.jobs.add(previous)
 
         retry = None
         if settings.job_retry_delays:

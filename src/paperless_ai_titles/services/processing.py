@@ -8,15 +8,10 @@ from typing import Any, Optional
 
 from ..clients.llm_client import TitleEvaluation, TitleLLMClient, TitleSuggestion
 from ..clients.paperless_client import PaperlessClient, PaperlessDocument
-from ..core.database import db_session
-from ..core.models import (
-    DocumentRecord,
-    DocumentStatus,
-    ProcessingJob,
-    ProcessingJobStatus,
-)
+from ..core.models import DocumentRecord, DocumentStatus, ProcessingJobStatus
 from ..document_eligibility import document_has_original_title_field, document_passes_tag_filters
 from ..services.settings import SettingsService
+from ..repositories.unit_of_work import UnitOfWork
 
 logger = logging.getLogger(__name__)
 
@@ -197,8 +192,8 @@ class ProcessingService:
             except Exception:  # pragma: no cover - optional metadata best effort
                 logger.warning("Could not set custom field for document %s", plan.document_id, exc_info=True)
 
-        with db_session() as session:
-            record = session.get(DocumentRecord, plan.document_id) or DocumentRecord(document_id=plan.document_id)
+        with UnitOfWork() as uow:
+            record = uow.documents.get_or_create(plan.document_id)
             if not record.original_title:
                 record.original_title = plan.existing_title or plan.new_title
             record.ai_title = plan.new_title
@@ -208,23 +203,20 @@ class ProcessingService:
             record.processed_at = datetime.utcnow()
             record.lock_reason = None
             self._apply_metadata(record, plan)
-            session.add(record)
+            uow.documents.add(record)
             logger.debug(
                 "Document %s metadata updated; job_id=%s",
                 plan.document_id,
                 job_id,
             )
 
-            if job_id is not None:
-                job = session.get(ProcessingJob, job_id)
-            else:
-                job = None
+            job = uow.jobs.get(job_id) if job_id is not None else None
             if job:
                 job.status = ProcessingJobStatus.COMPLETED.value
                 job.completed_at = datetime.utcnow()
                 job.llm_response = plan.suggestion.raw if plan.suggestion else None
                 job.reason = plan.reason
-                session.add(job)
+                uow.jobs.add(job)
                 logger.debug("Job %s marked completed", job_id)
 
     def _store_pending_plan(self, job_id: int, plan: ProcessingPlan) -> None:
@@ -247,8 +239,8 @@ class ProcessingService:
             "ocr_excerpt": ocr_excerpt,
             "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         }
-        with db_session() as session:
-            record = session.get(DocumentRecord, plan.document_id) or DocumentRecord(document_id=plan.document_id)
+        with UnitOfWork() as uow:
+            record = uow.documents.get_or_create(plan.document_id)
             if not record.original_title:
                 record.original_title = plan.existing_title or plan.document_payload.get("title") or plan.new_title
             record.ai_title = None
@@ -258,16 +250,16 @@ class ProcessingService:
             record.processed_at = None
             record.lock_reason = plan.reason
             self._apply_metadata(record, plan, pending_snapshot)
-            session.add(record)
+            uow.documents.add(record)
             logger.debug("Document %s awaiting approval", plan.document_id)
 
-            job = session.get(ProcessingJob, job_id)
+            job = uow.jobs.get(job_id)
             if job:
                 job.status = ProcessingJobStatus.AWAITING_APPROVAL.value
                 job.reason = plan.reason
                 job.llm_response = plan.suggestion.raw if plan.suggestion else None
                 job.completed_at = datetime.utcnow()
-                session.add(job)
+                uow.jobs.add(job)
                 logger.debug("Job %s set to awaiting approval", job_id)
 
     def _apply_metadata(
@@ -290,8 +282,8 @@ class ProcessingService:
         record.extra = metadata
 
     def _load_pending_payload(self, document_id: int) -> dict[str, Any]:
-        with db_session() as session:
-            record = session.get(DocumentRecord, document_id)
+        with UnitOfWork() as uow:
+            record = uow.documents.get(document_id)
             if not record or record.status != DocumentStatus.AWAITING_APPROVAL.value:
                 raise ValueError("Document is not awaiting approval")
             pending = (record.extra or {}).get("pending")  # type: ignore[index]
@@ -333,8 +325,8 @@ class ProcessingService:
         job_id = pending.get("job_id")
         denial_reason = reason or "denied by reviewer"
         logger.debug("Denying pending plan for document %s reason=%s", document_id, denial_reason)
-        with db_session() as session:
-            record = session.get(DocumentRecord, document_id)
+        with UnitOfWork() as uow:
+            record = uow.documents.get(document_id)
             if not record:
                 raise ValueError("Document record missing")
             record.ai_title = None
@@ -342,58 +334,52 @@ class ProcessingService:
             record.lock_reason = denial_reason
             record.last_error = None
             record.processed_at = datetime.utcnow()
-            metadata = dict(record.extra or {})
-            metadata.pop("pending", None)
-            record.extra = metadata
-            session.add(record)
+            _clear_pending_metadata(record)
+            uow.documents.add(record)
 
             if job_id:
-                job = session.get(ProcessingJob, job_id)
+                job = uow.jobs.get(job_id)
                 if job:
                     job.status = ProcessingJobStatus.REJECTED.value
                     job.reason = denial_reason
                     job.completed_at = datetime.utcnow()
-                    session.add(job)
+                    uow.jobs.add(job)
                     logger.debug("Job %s marked rejected", job_id)
 
     def _mark_skipped(self, job_id: int, document_id: int, reason: str) -> None:
         logger.debug("Marking job %s skipped for document %s: %s", job_id, document_id, reason)
-        with db_session() as session:
-            job = session.get(ProcessingJob, job_id)
+        with UnitOfWork() as uow:
+            job = uow.jobs.get(job_id)
             if job:
                 job.status = ProcessingJobStatus.SKIPPED.value
                 job.reason = reason
                 job.completed_at = datetime.utcnow()
-                session.add(job)
-            record = session.get(DocumentRecord, document_id) or DocumentRecord(document_id=document_id)
+                uow.jobs.add(job)
+            record = uow.documents.get_or_create(document_id)
             record.status = DocumentStatus.SKIPPED.value
             record.lock_reason = reason
             record.processed_at = datetime.utcnow()
-            metadata = dict(record.extra or {})
-            metadata.pop("pending", None)
-            record.extra = metadata
-            session.add(record)
+            _clear_pending_metadata(record)
+            uow.documents.add(record)
 
     def mark_failure(self, job_id: int, document_id: int, error: str) -> None:
         logger.debug("Marking job %s failed for document %s error=%s", job_id, document_id, error)
-        with db_session() as session:
-            summary = (error or "").strip().splitlines()[0] or "error"
-            if len(summary) > 240:
-                summary = summary[:237] + "..."
-            job = session.get(ProcessingJob, job_id)
+        summary = (error or "").strip().splitlines()[0] or "error"
+        if len(summary) > 240:
+            summary = summary[:237] + "..."
+        with UnitOfWork() as uow:
+            job = uow.jobs.get(job_id)
             if job:
                 job.status = ProcessingJobStatus.FAILED.value
                 job.last_error = error
                 job.reason = summary
-                session.add(job)
-            record = session.get(DocumentRecord, document_id) or DocumentRecord(document_id=document_id)
+                uow.jobs.add(job)
+            record = uow.documents.get_or_create(document_id)
             record.status = DocumentStatus.FAILED.value
             record.last_error = error
             record.processed_at = datetime.utcnow()
-            metadata = dict(record.extra or {})
-            metadata.pop("pending", None)
-            record.extra = metadata
-            session.add(record)
+            _clear_pending_metadata(record)
+            uow.documents.add(record)
 
     def _confidence_sufficient(self, plan: ProcessingPlan) -> bool:
         if not plan.suggestion or plan.suggestion.confidence is None:
@@ -417,6 +403,12 @@ def _serialize_tags(tags: Any) -> list[str]:
     return serialized
 
 
+def _clear_pending_metadata(record: DocumentRecord) -> None:
+    metadata = dict(record.extra or {})
+    metadata.pop("pending", None)
+    record.extra = metadata
+
+
 def run_processing_job(job_id: int, document_id: int) -> None:
     service = ProcessingService()
     _set_job_running(job_id)
@@ -429,13 +421,13 @@ def run_processing_job(job_id: int, document_id: int) -> None:
 
 
 def _set_job_running(job_id: int) -> None:
-    with db_session() as session:
-        job = session.get(ProcessingJob, job_id)
+    with UnitOfWork() as uow:
+        job = uow.jobs.get(job_id)
         if job:
             job.status = ProcessingJobStatus.RUNNING.value
             job.attempt_count = (job.attempt_count or 0) + 1
-            session.add(job)
+            uow.jobs.add(job)
 
-            record = session.get(DocumentRecord, job.document_id) or DocumentRecord(document_id=job.document_id)
+            record = uow.documents.get_or_create(job.document_id)
             record.status = DocumentStatus.RUNNING.value
-            session.add(record)
+            uow.documents.add(record)

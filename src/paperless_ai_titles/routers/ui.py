@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from ..clients.llm_client import BUILTIN_TITLE_PROMPT
-from ..core.models import ProcessingJobStatus
+from ..core.status_sets import PROCESSING_JOB_ALL_STATUSES
 from ..services.settings import SettingsService
 
 templates = Jinja2Templates(directory="templates")
@@ -47,7 +47,7 @@ async def settings_page(request: Request):
 async def job_history_page(request: Request):
     if settings_service.needs_onboarding():
         return templates.TemplateResponse("setup.html", {"request": request})
-    statuses = [status.value for status in ProcessingJobStatus]
+    statuses = list(PROCESSING_JOB_ALL_STATUSES)
     return templates.TemplateResponse(
         "job_history.html",
         {
