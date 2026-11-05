@@ -30,7 +30,7 @@ jobs:
       - name: Run semantic-release
         uses: cycjimmy/semantic-release-action@v4
         with:
-          semantic_version: 23.1.1
+          semantic_version: 25.0.9
           branches: main
         env:
           # Use a personal access token (PAT) so semantic-release
